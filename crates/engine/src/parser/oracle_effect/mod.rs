@@ -11505,7 +11505,7 @@ fn try_parse_perpetual_modify_pt(tp: TextPair) -> Option<Effect> {
 /// the clause at the perpetual verb and returns `(subject, remainder after the
 /// verb)`. Rejects clauses with no `perpetually get(s)` so unrelated text never
 /// reaches the gap fallback.
-fn split_perpetual_get_clause(lower: &str) -> Option<(&str, &str)> {
+pub(super) fn split_perpetual_get_clause(lower: &str) -> Option<(&str, &str)> {
     let (rest, subject) = take_until::<_, _, OracleError<'_>>(" perpetually get")
         .parse(lower)
         .ok()?;
@@ -11530,9 +11530,11 @@ fn split_perpetual_get_clause(lower: &str) -> Option<(&str, &str)> {
 /// than to this clause: a bare "it" anaphor (the binder fails it closed when
 /// unbound), or anything that is not ONE complete noun phrase. A lead-in that
 /// `parse_target` cannot consume whole — a sibling clause joined by ", and" /
-/// " and it" ("you gain X life, and the topmost creature card …"), or a leading
-/// guard ("if it's a creature, it") — is left for the chain splitter and guard
-/// peel to break apart before this arm sees the residual clause.
+/// " and it", or a leading guard ("if it's a creature, it") — is left for the
+/// chain splitter and guard peel to break apart before this arm sees the
+/// residual clause. The splitter opens a clause at ", and <subject> perpetually
+/// get(s)" (`starts_perpetual_subject_conjunct`), so a sibling instruction never
+/// reaches this arm fused to the perpetual edit.
 fn perpetual_subject_is_chain_led(subject: &str) -> bool {
     if all_consuming(tag::<_, _, OracleError<'_>>("it"))
         .parse(subject)
@@ -11540,29 +11542,7 @@ fn perpetual_subject_is_chain_led(subject: &str) -> bool {
     {
         return true;
     }
-    !(subject_is_complete_noun_phrase_list(subject)
-        || subject_is_unmodelled_noun_phrase(subject)
-        || subject_trails_a_sibling_noun_phrase(subject))
-}
-
-/// "<sibling clause>, and <noun phrase>" ("you gain X life, and the topmost
-/// creature card in your library"). The chain splitter does not open a new
-/// clause at a determiner-led conjunct, so the sibling parser would consume this
-/// text and silently drop the trailing perpetual edit. The gap arm keeps the
-/// whole clause as one honest gap instead (the sibling's own effect is lost with
-/// it until the splitter recognises the conjunct). A leading guard has no
-/// ", and " lead-in and is still declined for the guard peel.
-fn subject_trails_a_sibling_noun_phrase(subject: &str) -> bool {
-    pair(
-        pair(take_until::<_, _, OracleError<'_>>(", and "), tag(", and ")),
-        rest,
-    )
-    .parse(subject)
-    .is_ok_and(|(_, ((lead, _), conjunct))| {
-        tag::<_, _, OracleError<'_>>("if ").parse(lead).is_err()
-            && (subject_is_complete_noun_phrase_list(conjunct)
-                || subject_is_unmodelled_noun_phrase(conjunct))
-    })
+    !(subject_is_complete_noun_phrase_list(subject) || subject_is_unmodelled_noun_phrase(subject))
 }
 
 /// A determiner-led subject with no clause-boundary comma whose noun phrase

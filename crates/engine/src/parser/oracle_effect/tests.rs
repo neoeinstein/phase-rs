@@ -75274,3 +75274,95 @@ fn trailing_or_if_type_gate_binds_to_target_only_for_a_targeting_effect() {
         AbilityCondition::TargetMatchesFilter { .. }
     ));
 }
+
+/// CR 608.2c: ", and <noun phrase> perpetually gets +X/+X" is its own instruction,
+/// so the life gain before it survives and the perpetual edit stays an honest gap.
+#[test]
+fn perpetual_conjunct_after_life_gain_keeps_the_life_gain() {
+    let def = parse_effect_chain(
+        "Each opponent loses X life, you gain X life, and the topmost creature card in your library perpetually gets +X/+X, where X is the number of counters removed this way.",
+        AbilityKind::Spell,
+    );
+    let effects = chain_effects(&def);
+    let gain = effects
+        .iter()
+        .position(|e| matches!(e, Effect::GainLife { .. }))
+        .expect("GainLife must survive");
+    let Some(Effect::Unimplemented { name, .. }) = effects.get(gain + 1) else {
+        panic!("expected an Unimplemented gap after GainLife, got {effects:?}");
+    };
+    assert_eq!(name, "perpetual_modify_pt");
+}
+
+/// CR 701.19c + CR 608.2c: the plural "They can't be regenerated" covers every
+/// Destroy of the run it follows (Plague Spores).
+#[test]
+fn plural_cant_regenerate_flags_every_destroy_in_the_run() {
+    let def = parse_effect_chain(
+        "Destroy target nonblack creature and target land. They can't be regenerated.",
+        AbilityKind::Spell,
+    );
+    let effects = chain_effects(&def);
+    let flags: Vec<bool> = effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::Destroy {
+                cant_regenerate, ..
+            } => Some(*cant_regenerate),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(flags, vec![true, true], "{effects:?}");
+}
+
+/// CR 701.19c + CR 608.2c: singular "It can't be regenerated" flags one Destroy.
+#[test]
+fn singular_cant_regenerate_flags_one_destroy() {
+    let def = parse_effect_chain(
+        "Destroy target creature. It can't be regenerated.",
+        AbilityKind::Spell,
+    );
+    assert!(matches!(
+        *def.effect,
+        Effect::Destroy {
+            cant_regenerate: true,
+            ..
+        }
+    ));
+}
+
+/// CR 701.19c: plural rider on a single mass destroy is unchanged.
+#[test]
+fn plural_cant_regenerate_on_destroy_all_is_unchanged() {
+    let def = parse_effect_chain(
+        "Destroy all creatures. They can't be regenerated.",
+        AbilityKind::Spell,
+    );
+    assert!(matches!(
+        *def.effect,
+        Effect::DestroyAll {
+            cant_regenerate: true,
+            ..
+        }
+    ));
+}
+
+/// CR 608.2c: an earlier Destroy separated from the run by another instruction
+/// is not part of the plural antecedent.
+#[test]
+fn plural_cant_regenerate_skips_a_destroy_separated_by_another_instruction() {
+    let def = parse_effect_chain(
+        "Destroy target artifact. Draw a card. Destroy target land. They can't be regenerated.",
+        AbilityKind::Spell,
+    );
+    let flags: Vec<bool> = chain_effects(&def)
+        .iter()
+        .filter_map(|e| match e {
+            Effect::Destroy {
+                cant_regenerate, ..
+            } => Some(*cant_regenerate),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(flags, vec![false, true]);
+}

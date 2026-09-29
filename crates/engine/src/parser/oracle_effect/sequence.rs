@@ -1,6 +1,6 @@
 use crate::parser::oracle_nom::error::{oracle_err, OracleError, OracleResult};
 use nom::branch::alt;
-use nom::bytes::complete::{tag, tag_no_case, take_till, take_until};
+use nom::bytes::complete::{is_not, tag, tag_no_case, take_till, take_until};
 use nom::character::complete::multispace1;
 use nom::combinator::{all_consuming, eof, map, map_opt, opt, rest, value};
 use nom::multi::separated_list1;
@@ -1980,6 +1980,14 @@ fn split_comma_clause_boundary(current: &str, remainder: &str) -> Option<(Clause
         return Some((ClauseBoundary::Comma, whitespace_len));
     }
 
+    // CR 608.2c: "<effect A>, and <noun phrase> perpetually gets <P/T>" — a
+    // sibling instruction whose subject is a noun phrase, not a verb the
+    // clause-start recognisers know (Thorna and Twigtooth's "and the topmost
+    // creature card in your library perpetually gets +X/+X").
+    if starts_perpetual_subject_conjunct(&trimmed_lower) {
+        return Some((ClauseBoundary::Comma, whitespace_len));
+    }
+
     if starts_prefix_clause(&current_lower) {
         return None;
     }
@@ -2194,6 +2202,27 @@ fn starts_mana_spent_conjunct(current_lower: &str, trimmed_lower: &str) -> bool 
         )
 }
 
+/// CR 608.2c: True when the text after the comma is an "and"-joined conjunct
+/// whose own subject takes "perpetually get(s)" ("and the top creature card of
+/// your library perpetually gets +1/+1"). The verb tail is owned by
+/// `split_perpetual_get_clause`; the conjunct ends at the next sentence
+/// boundary, so a later sentence's "perpetually" cannot promote an earlier
+/// conjunct, and a subject holding a comma or period is not one noun phrase.
+fn starts_perpetual_subject_conjunct(trimmed_lower: &str) -> bool {
+    preceded(
+        tag::<_, _, OracleError<'_>>("and "),
+        rest::<_, OracleError<'_>>,
+    )
+    .parse(before_sentence_boundary(trimmed_lower))
+    .ok()
+    .and_then(|(_, conjunct)| super::split_perpetual_get_clause(conjunct))
+    .is_some_and(|(subject, _)| {
+        all_consuming(is_not::<_, _, OracleError<'_>>(",."))
+            .parse(subject)
+            .is_ok()
+    })
+}
+
 /// Phrase shared by every "if {C} was spent to cast <it>" gate.
 const MANA_SPENT_TO_CAST: &str = "was spent to cast ";
 
@@ -2203,6 +2232,20 @@ fn before_sentence_boundary(text: &str) -> &str {
     take_until::<_, _, OracleError<'_>>(". ")
         .parse(text)
         .map_or(text, |(_, sentence)| sentence)
+}
+
+/// CR 608.2c: "They / Those can't be regenerated" names every Destroy of the
+/// run it follows; any other subject ("It", "A creature destroyed this way")
+/// names the nearest one.
+fn cant_regenerate_scope(lower: &str) -> AnaphorNumber {
+    if alt((tag::<_, _, OracleError<'_>>("they "), tag("those ")))
+        .parse(lower)
+        .is_ok()
+    {
+        AnaphorNumber::Plural
+    } else {
+        AnaphorNumber::Singular
+    }
 }
 
 fn is_for_each_copy_token_continuation(
@@ -4960,21 +5003,53 @@ pub(super) fn apply_clause_continuation(
             ));
         }
         ContinuationAst::SelfCostKeywordCostClarification => {}
-        ContinuationAst::CantRegenerate => {
+        ContinuationAst::CantRegenerate { scope } => {
             // CR 608.2c: walk backward through the definition chain to find
             // the nearest Destroy/DestroyAll. The regen clause may not be
             // adjacent — e.g. Kirtar's Wrath threshold has a Token creation
             // between the DestroyAll and "Creatures destroyed this way can't
             // be regenerated."
-            let bound = env.resolve(
-                defs,
-                super::assembly::AntecedentSelector::LastWithRole(
-                    super::assembly::AntecedentRole::DestroyLike,
-                ),
-                None,
-                super::assembly::OnMiss::Ignore,
-            );
-            if let Some(bound_index) = bound {
+            //
+            // CR 608.2c + CR 701.19c: plural "They can't be regenerated" names
+            // every Destroy of the run it follows (Plague Spores: "Destroy
+            // target nonblack creature and target land. They can't be
+            // regenerated."), so it fans out over the contiguous run of
+            // DestroyLike defs ending at the nearest one; an earlier Destroy
+            // separated from that run by another instruction is not part of
+            // the antecedent.
+            let bound: Vec<usize> = match scope {
+                AnaphorNumber::Singular => env
+                    .resolve(
+                        defs,
+                        super::assembly::AntecedentSelector::LastWithRole(
+                            super::assembly::AntecedentRole::DestroyLike,
+                        ),
+                        None,
+                        super::assembly::OnMiss::Ignore,
+                    )
+                    .into_iter()
+                    .collect(),
+                AnaphorNumber::Plural => {
+                    let members = env.resolve_all(
+                        defs,
+                        super::assembly::AntecedentSelector::AllWithRole(
+                            super::assembly::AntecedentRole::DestroyLike,
+                        ),
+                        None,
+                        super::assembly::OnMiss::Ignore,
+                    );
+                    // The run ends at the nearest Destroy and extends back while
+                    // each earlier member sits directly before the next.
+                    let run_len = members
+                        .windows(2)
+                        .rev()
+                        .take_while(|pair| pair[0] + 1 == pair[1])
+                        .count()
+                        + usize::from(!members.is_empty());
+                    members[members.len() - run_len..].to_vec()
+                }
+            };
+            for bound_index in bound {
                 let def = &mut defs[bound_index];
                 // CR 608.2c: the DestroyLike antecedent may be nested inside a
                 // CreateDelayedTrigger wrapper (Merieke Ri Berit), so descend
@@ -6369,7 +6444,7 @@ pub(super) fn continuation_absorbs_current(
         ContinuationAst::SearchDestination { .. } => false,
         ContinuationAst::SuspectLastCreated => matches!(current_effect, Effect::Suspect { .. }),
         ContinuationAst::GoadLastCreated { .. } => true,
-        ContinuationAst::CantRegenerate => true,
+        ContinuationAst::CantRegenerate { .. } => true,
         // CR 116.2c: recognition was already gated on a preceding
         // continuous-effect-installing `GenericEffect`, so absorption is
         // unconditional. Full absorption is REQUIRED, not merely convenient: the
@@ -8451,7 +8526,9 @@ pub(super) fn parse_followup_continuation_ast_with_search_destination(
                 && (nom_primitives::scan_contains(&lower, "can't be regenerated")
                     || nom_primitives::scan_contains(&lower, "cannot be regenerated")) =>
         {
-            Some(ContinuationAst::CantRegenerate)
+            Some(ContinuationAst::CantRegenerate {
+                scope: cant_regenerate_scope(&lower),
+            })
         }
         // CR 120.4a + CR 608.2c + CR 702: excess-damage redirect rider on a
         // `DealDamage` (Flame Spill, Gandalf's Sanction, Ravenous Tyrannosaurus),
@@ -8708,7 +8785,9 @@ pub(super) fn parse_followup_continuation_ast_with_search_destination(
                 "destroyed this way cannot be regenerated",
             ) =>
         {
-            Some(ContinuationAst::CantRegenerate)
+            Some(ContinuationAst::CantRegenerate {
+                scope: AnaphorNumber::Singular,
+            })
         }
         // CR 122.6a + CR 614.1c: Token enters-with-counters continuation. Two forms:
         //   * Declarative: "The token enters with X +1/+1 counters on it[, where X is ...]"
@@ -15630,6 +15709,67 @@ mod leading_duration_guard_tests_7923 {
         ));
         assert!(!head_ends_with_dangling_phase_trigger(
             "target tapped creature doesn't untap during its controller's untap step"
+        ));
+    }
+
+    /// CR 608.2c: ", and <noun phrase> perpetually get(s) <P/T>" opens a new
+    /// clause whatever the verb number or the subject's shape.
+    #[test]
+    fn comma_and_perpetual_subject_conjunct_opens_a_clause() {
+        let subjects = [
+            "the top creature card of your library",
+            "the topmost creature card in your library",
+            "target creature card in your hand",
+        ];
+        for subject in subjects {
+            for verb in ["gets", "get"] {
+                let text = format!("You gain 3 life, and {subject} perpetually {verb} +1/+1");
+                assert_eq!(
+                    split_clause_sequence(&text).len(),
+                    2,
+                    "{text:?} must split into the life gain and the perpetual edit"
+                );
+            }
+        }
+    }
+
+    /// CR 608.2c: a compound subject joined by a bare "and" is one noun phrase,
+    /// and only the ", and" that follows a sibling instruction is a boundary.
+    #[test]
+    fn perpetual_compound_subject_is_not_split() {
+        assert_eq!(
+            split_clause_sequence(
+                "Creatures you control and creature cards in your hand perpetually get +1/+1"
+            )
+            .len(),
+            1
+        );
+        assert_eq!(
+            split_clause_sequence(
+                "Draw a card, and creatures you control and creature cards in your hand \
+                 perpetually get +1/+1"
+            )
+            .len(),
+            2
+        );
+    }
+
+    /// CR 608.2c: a ", and" conjunct without "perpetually get(s)" gains no
+    /// boundary from this rule, and a later sentence's "perpetually" cannot
+    /// promote an earlier conjunct.
+    #[test]
+    fn perpetual_conjunct_boundary_is_bound_to_its_own_sentence() {
+        assert!(!starts_perpetual_subject_conjunct(
+            "and the top creature card of your library gets +1/+1"
+        ));
+        assert!(starts_perpetual_subject_conjunct(
+            "and the top creature card of your library perpetually gets +1/+1"
+        ));
+        assert!(!starts_perpetual_subject_conjunct(
+            "and draw a card. target creature perpetually gets +1/+1"
+        ));
+        assert!(!starts_perpetual_subject_conjunct(
+            "and draw a card, then target creature perpetually gets +1/+1"
         ));
     }
 }
