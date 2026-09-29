@@ -74782,6 +74782,60 @@ fn put_top_of_graveyard_never_lowers_to_mill() {
     }
 }
 
+/// CR 404.1: the graveyard-top source accepts an optional card type and any
+/// owner (including "defending player's"), and the clause is never a Mill. The
+/// unimplemented fragment is the printed clause.
+#[test]
+fn put_top_typed_card_of_graveyard_onto_battlefield_fails_closed() {
+    for owner in [
+        "defending player's",
+        "target player's",
+        "an opponent's",
+        "that player's",
+    ] {
+        for card in ["card", "creature card"] {
+            let text = format!(
+                "Put the top {card} of {owner} graveyard onto the battlefield under your control."
+            );
+            let def = parse_effect_chain(&text, AbilityKind::Spell);
+            assert!(
+                matches!(def.effect.as_ref(), Effect::Unimplemented { name, .. } if name == "put_top_of_graveyard"),
+                "{text}: {:?}",
+                def.effect
+            );
+            let fragment = def.effect.unimplemented_description().unwrap();
+            assert_eq!(
+                fragment.trim_end_matches('.'),
+                text.trim_end_matches('.'),
+                "the fragment is the printed clause"
+            );
+        }
+    }
+}
+
+/// CR 701.17a: a library source lowers to Mill even when the clause names a
+/// graveyard as the destination, at any count.
+#[test]
+fn put_top_cards_of_library_into_graveyard_lowers_to_mill_at_any_count() {
+    for (text, count) in [
+        (
+            "Put the top three cards of your library into your graveyard.",
+            3,
+        ),
+        ("Put the top card of your library into your graveyard.", 1),
+    ] {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        assert!(
+            matches!(
+                def.effect.as_ref(),
+                Effect::Mill { count: QuantityExpr::Fixed { value }, .. } if *value == count
+            ),
+            "{text}: {:?}",
+            def.effect
+        );
+    }
+}
+
 /// CR 701.17a: a library source keeps the self-mill reading at any count.
 #[test]
 fn put_top_of_library_into_graveyard_stays_mill() {
