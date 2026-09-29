@@ -1677,6 +1677,10 @@ pub(crate) enum PutImperativeAst {
     Mill {
         count: u32,
     },
+    /// CR 404.1: "put the top card of <possessive> graveyard …" — a
+    /// graveyard-sourced move the engine cannot yet select; lowers to an
+    /// honest `Effect::unimplemented`.
+    GraveyardTopUnsupported,
     ZoneChange {
         origin: Option<Zone>,
         destination: Zone,

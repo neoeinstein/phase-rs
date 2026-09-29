@@ -74709,3 +74709,44 @@ fn liliana_pt_disjunction_keeps_both_alternatives_and_binds_x_to_swamps() {
         "the two alternatives must be exact inverses of one bound quantity"
     );
 }
+
+/// CR 404.1: "put the top card of <possessive> graveyard …" takes its card from
+/// a graveyard; it must never lower to a library→graveyard Mill, whichever
+/// owner or destination position is named.
+#[test]
+fn put_top_of_graveyard_never_lowers_to_mill() {
+    for owner in ["your", "their", "that player's", "target player's", "a"] {
+        for tail in ["on the bottom of your library", "on top of your library"] {
+            let text = format!("Put the top card of {owner} graveyard {tail}.");
+            let def = parse_effect_chain(&text, AbilityKind::Activated);
+            assert!(
+                matches!(def.effect.as_ref(), Effect::Unimplemented { .. }),
+                "{text}: {:?}",
+                def.effect
+            );
+        }
+    }
+}
+
+/// CR 701.17a: a library source keeps the self-mill reading at any count.
+#[test]
+fn put_top_of_library_into_graveyard_stays_mill() {
+    for (text, count) in [
+        ("Put the top card of your library into your graveyard.", 1),
+        (
+            "Put the top two cards of your library into your graveyard.",
+            2,
+        ),
+    ] {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        assert!(
+            matches!(
+                def.effect.as_ref(),
+                Effect::Mill { count: QuantityExpr::Fixed { value }, destination: Zone::Graveyard, .. }
+                    if *value == count
+            ),
+            "{text}: {:?}",
+            def.effect
+        );
+    }
+}

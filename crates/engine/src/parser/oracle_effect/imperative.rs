@@ -2,7 +2,9 @@ use crate::parser::oracle_nom::error::{oracle_err, OracleError, OracleResult};
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_till, take_until, take_while1};
 use nom::character::complete::{one_of, space0, space1, u8 as parse_u8};
-use nom::combinator::{all_consuming, eof, map, map_res, not, opt, peek, rest, value, verify};
+use nom::combinator::{
+    all_consuming, eof, map, map_res, not, opt, peek, recognize, rest, value, verify,
+};
 use nom::error::ParseError;
 use nom::sequence::{pair, preceded, terminated};
 use nom::Parser;
@@ -8018,6 +8020,40 @@ pub(super) fn lower_imperative_ast(ast: ImperativeAst) -> Effect {
     }
 }
 
+/// CR 404.1: The source phrase of "put the top <count?> card(s) of <possessive>
+/// graveyard …" — the text after "put the top ". Matches the optional count, the
+/// "card(s) of" head noun, one owner row, and the "graveyard" zone noun, so a
+/// library source ("the top two cards of your library into your graveyard")
+/// never matches and stays a Mill.
+fn parse_graveyard_top_source(input: &str) -> Option<&str> {
+    let (rest, _) = opt(terminated(
+        alt((
+            recognize(nom_primitives::parse_number),
+            tag::<_, _, OracleError<'_>>("x"),
+        )),
+        space1,
+    ))
+    .parse(input)
+    .ok()?;
+    let (rest, _) = (
+        alt((tag::<_, _, OracleError<'_>>("cards of "), tag("card of "))),
+        alt((
+            tag("your"),
+            tag("their"),
+            tag("that player's"),
+            tag("target player's"),
+            tag("target opponent's"),
+            tag("an opponent's"),
+            tag("each player's"),
+            tag("a"),
+        )),
+        tag(" graveyard"),
+    )
+        .parse(rest)
+        .ok()?;
+    Some(rest)
+}
+
 pub(super) fn parse_put_ast(
     text: &str,
     lower: &str,
@@ -8044,6 +8080,14 @@ pub(super) fn parse_put_ast(
     }
 
     if let Ok((after, _)) = tag::<_, _, OracleError<'_>>("put the top ").parse(lower) {
+        // CR 404.1 + CR 404.2: "put the top card of <possessive> graveyard …"
+        // takes its card FROM a graveyard. The graveyard-top selection has no
+        // engine representation, so it must not fall into the library→graveyard
+        // Mill below (the opposite direction) nor the generic library-position
+        // reposition, which would move an arbitrary card.
+        if parse_graveyard_top_source(after).is_some() {
+            return Some(PutImperativeAst::GraveyardTopUnsupported);
+        }
         if nom_primitives::scan_contains(lower, "graveyard") {
             let count = nom_primitives::parse_number
                 .parse(after)
@@ -8347,6 +8391,12 @@ fn parse_beneath_top_depth(lower: &str) -> Option<QuantityExpr> {
 
 pub(super) fn lower_put_ast(ast: PutImperativeAst) -> Effect {
     match ast {
+        // CR 404.1: no representation for "the top card of a graveyard" yet;
+        // fail closed rather than mis-route it as a library mill.
+        PutImperativeAst::GraveyardTopUnsupported => Effect::unimplemented(
+            "put_top_of_graveyard",
+            "put the top card of a graveyard into a library",
+        ),
         PutImperativeAst::Mill { count } => Effect::Mill {
             count: QuantityExpr::Fixed {
                 value: count as i32,
