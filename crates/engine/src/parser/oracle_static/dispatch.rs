@@ -3882,7 +3882,12 @@ pub(crate) fn parse_static_line_inner(
         if let Some((_, condition_text, _)) = nom_primitives::scan_preceded(tp.lower, |i| {
             preceded(
                 tag::<_, _, OracleError<'_>>("triggers while "),
-                terminated(take_until(", "), tag(", ")),
+                // Anchor on the doubler's own continuation so a condition that
+                // itself contains a comma is not cut at its first ", ".
+                terminated(
+                    take_until(", that ability trigger"),
+                    tag(", that ability trigger"),
+                ),
             )
             .parse(i)
         }) {

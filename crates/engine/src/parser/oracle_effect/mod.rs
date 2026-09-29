@@ -11528,17 +11528,78 @@ fn split_perpetual_get_clause(lower: &str) -> Option<(&str, &str)> {
 
 /// True when `subject` belongs to the chain splitter / subject binder rather
 /// than to this clause: a bare "it" anaphor (the binder fails it closed when
-/// unbound), or a verb-led lead-in joined to a pronoun subject ("return it to
-/// the battlefield and it …"), which the splitter breaks into separate clauses.
+/// unbound), or anything that is not ONE complete noun phrase. A lead-in that
+/// `parse_target` cannot consume whole — a sibling clause joined by ", and" /
+/// " and it" ("you gain X life, and the topmost creature card …"), or a leading
+/// guard ("if it's a creature, it") — is left for the chain splitter and guard
+/// peel to break apart before this arm sees the residual clause.
 fn perpetual_subject_is_chain_led(subject: &str) -> bool {
-    all_consuming(tag::<_, _, OracleError<'_>>("it"))
+    if all_consuming(tag::<_, _, OracleError<'_>>("it"))
         .parse(subject)
         .is_ok()
-        || [" and it", " and they", " and that "].iter().any(|joiner| {
-            take_until::<_, _, OracleError<'_>>(*joiner)
-                .parse(subject)
-                .is_ok()
-        })
+    {
+        return true;
+    }
+    !(subject_is_complete_noun_phrase_list(subject)
+        || subject_is_unmodelled_noun_phrase(subject)
+        || subject_trails_a_sibling_noun_phrase(subject))
+}
+
+/// "<sibling clause>, and <noun phrase>" ("you gain X life, and the topmost
+/// creature card in your library"). The chain splitter does not open a new
+/// clause at a determiner-led conjunct, so the sibling parser would consume this
+/// text and silently drop the trailing perpetual edit. The gap arm keeps the
+/// whole clause as one honest gap instead (the sibling's own effect is lost with
+/// it until the splitter recognises the conjunct). A leading guard has no
+/// ", and " lead-in and is still declined for the guard peel.
+fn subject_trails_a_sibling_noun_phrase(subject: &str) -> bool {
+    pair(
+        pair(take_until::<_, _, OracleError<'_>>(", and "), tag(", and ")),
+        rest,
+    )
+    .parse(subject)
+    .is_ok_and(|(_, ((lead, _), conjunct))| {
+        tag::<_, _, OracleError<'_>>("if ").parse(lead).is_err()
+            && (subject_is_complete_noun_phrase_list(conjunct)
+                || subject_is_unmodelled_noun_phrase(conjunct))
+    })
+}
+
+/// A determiner-led subject with no clause-boundary comma whose noun phrase
+/// `parse_target` cannot model whole ("the topmost creature card in your
+/// library"). It is still ONE subject, so the gap arm records it rather than
+/// letting the clause fall through to the generic until-end-of-turn pump; a
+/// sibling clause ("you gain X life, and …") or a leading guard ("if it's …, it")
+/// does not start with a determiner or carries a comma, and stays declined.
+fn subject_is_unmodelled_noun_phrase(subject: &str) -> bool {
+    let determiner_led = alt((
+        tag::<_, _, OracleError<'_>>("the "),
+        tag("a "),
+        tag("an "),
+        tag("each "),
+        tag("all "),
+    ))
+    .parse(subject)
+    .is_ok();
+    determiner_led
+        && take_until::<_, _, OracleError<'_>>(", ")
+            .parse(subject)
+            .is_err()
+}
+
+/// True when `subject` is one noun phrase `parse_target` consumes whole, or
+/// several joined by " and " ("creatures you control and creature cards in your
+/// hand"). A compound subject is still a gap, but only when every conjunct is
+/// itself a full noun phrase; a sibling clause is not.
+fn subject_is_complete_noun_phrase_list(subject: &str) -> bool {
+    let (filter, after_subject) = parse_target(subject);
+    if matches!(filter, TargetFilter::Any) {
+        return false;
+    }
+    after_subject.is_empty()
+        || tag::<_, _, OracleError<'_>>(" and ")
+            .parse(after_subject)
+            .is_ok_and(|(next, _)| subject_is_complete_noun_phrase_list(next))
 }
 
 /// A "perpetually get(s) ±" clause no arm above can model faithfully (a dynamic

@@ -4015,26 +4015,15 @@ fn parse_you_have_conditions(input: &str) -> OracleResult<'_, StaticCondition> {
             ));
         }
     }
-    if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>(" or more life").parse(rest) {
-        return Ok((
-            rest,
-            make_quantity_ge(
-                QuantityRef::LifeTotal {
-                    player: PlayerScope::Controller,
-                },
-                n,
-            ),
-        ));
-    }
-    // "you have N or less life" → LifeTotal LE N
-    if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>(" or less life").parse(rest) {
+    // "you have N or more life" / "you have N or less life" → LifeTotal GE / LE N
+    if let Ok((rest, comparator)) = parse_life_threshold_suffix(rest) {
         return Ok((
             rest,
             make_quantity_comparison(
                 QuantityRef::LifeTotal {
                     player: PlayerScope::Controller,
                 },
-                Comparator::LE,
+                comparator,
                 n,
             ),
         ));
@@ -4264,6 +4253,21 @@ fn parse_parent_target_referent(input: &str) -> OracleResult<'_, ParentTargetRef
     .parse(input)
 }
 
+/// CR 119 + CR 603.4: The " or less life" / " or more life" suffix shared by every
+/// life-threshold predicate ("you have N …", "that player has N …", "an opponent
+/// has N …", "each player has N …"). Returns the `Comparator` the suffix names;
+/// callers pair it with their own subject scope and the already-parsed `N`.
+fn parse_life_threshold_suffix(input: &str) -> OracleResult<'_, Comparator> {
+    alt((
+        value(
+            Comparator::LE,
+            tag::<_, _, OracleError<'_>>(" or less life"),
+        ),
+        value(Comparator::GE, tag(" or more life")),
+    ))
+    .parse(input)
+}
+
 /// Parse life-total predicates after a `<subject> has ` prefix has been
 /// consumed. Returns `Some(condition)` on match.
 ///
@@ -4289,18 +4293,7 @@ fn parse_life_predicate(rest: &str, player: PlayerScope) -> Option<(&str, Static
     // comparison against the scoped player's life total. Ezio Auditore da
     // Firenze canonical for the LE arm.
     let (after_n, n) = parse_number(rest).ok()?;
-    if let Ok((rest, comparator)) = alt((
-        value(
-            Comparator::LE,
-            tag::<_, _, OracleError<'_>>(" or less life"),
-        ),
-        value(
-            Comparator::GE,
-            tag::<_, _, OracleError<'_>>(" or more life"),
-        ),
-    ))
-    .parse(after_n)
-    {
+    if let Ok((rest, comparator)) = parse_life_threshold_suffix(after_n) {
         return Some((
             rest,
             make_quantity_comparison(QuantityRef::LifeTotal { player }, comparator, n),
@@ -5420,17 +5413,8 @@ fn parse_each_player_life_threshold(input: &str) -> OracleResult<'_, StaticCondi
     ))
     .parse(input)?;
     let (rest, n) = parse_number(rest)?;
-    let (rest, (comparator, aggregate)) = alt((
-        value(
-            (Comparator::LE, AggregateFunction::Max),
-            tag::<_, _, OracleError<'_>>(" or less life"),
-        ),
-        value(
-            (Comparator::GE, AggregateFunction::Min),
-            tag(" or more life"),
-        ),
-    ))
-    .parse(rest)?;
+    let (rest, comparator) = parse_life_threshold_suffix(rest)?;
+    let aggregate = universal_aggregate(comparator);
     Ok((
         rest,
         make_quantity_comparison(
@@ -6114,6 +6098,20 @@ fn existential_aggregate(comparator: Comparator) -> AggregateFunction {
         Comparator::EQ | Comparator::NE => unreachable!(
             "EQ/NE have no single-aggregate existential encoding; \
              parse_life_total_comparator never produces them"
+        ),
+    }
+}
+
+/// CR 603.4: Aggregate for a universal ("each player") life threshold — the dual
+/// of [`existential_aggregate`]: every player is `<= N` exactly when the MAXIMUM
+/// is `<= N`, and `>= N` exactly when the MINIMUM is `>= N`.
+fn universal_aggregate(comparator: Comparator) -> AggregateFunction {
+    match comparator {
+        Comparator::LE | Comparator::LT => AggregateFunction::Max,
+        Comparator::GE | Comparator::GT => AggregateFunction::Min,
+        Comparator::EQ | Comparator::NE => unreachable!(
+            "EQ/NE have no single-aggregate universal encoding; \
+             parse_life_threshold_suffix never produces them"
         ),
     }
 }
@@ -10360,18 +10358,7 @@ fn parse_opponent_comparison_conditions(input: &str) -> OracleResult<'_, StaticC
                     ),
                 ));
             }
-            if let Ok((rest4, comparator)) = alt((
-                value(
-                    Comparator::LE,
-                    tag::<_, _, OracleError<'_>>(" or less life"),
-                ),
-                value(
-                    Comparator::GE,
-                    tag::<_, _, OracleError<'_>>(" or more life"),
-                ),
-            ))
-            .parse(rest3)
-            {
+            if let Ok((rest4, comparator)) = parse_life_threshold_suffix(rest3) {
                 return Ok((
                     rest4,
                     make_quantity_comparison(

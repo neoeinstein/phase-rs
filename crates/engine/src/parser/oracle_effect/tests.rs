@@ -65538,11 +65538,11 @@ fn they_may_trigger_head_defers_to_a_clause_local_anaphor() {
     // Fixture A: Smart Ass's own second sentence, single-sentence so the
     // RevealHand node IS the top-level execute (the only node the detector can
     // write to).
-    let fixture_a = "Whenever this creature becomes blocked, if defending player has no cards in hand, they may reveal their hand.";
+    let fixture_a = "Whenever this creature becomes blocked, if defending player controls no walls, they may reveal their hand.";
     // Reach-guard: the trigger body head matches the SAME combinator the
     // detector uses, so the fixture provably reaches the clobber surface.
     let after_if = fixture_a
-        .rsplit_once("if defending player has no cards in hand, ")
+        .rsplit_once("if defending player controls no walls, ")
         .map(|(_, rest)| rest)
         .expect("fixture contains the intervening-if");
     // Bind the lowercase body to a local: the parser's output borrows from it,
@@ -65564,19 +65564,20 @@ fn they_may_trigger_head_defers_to_a_clause_local_anaphor() {
         &["Creature".to_string()],
         &[],
     );
-    let node = match parsed.triggers.iter().find_map(|t| t.execute.as_deref()) {
-        Some(node) => node,
-        None => {
-            // Fallback ladder: Fixture A's reach-guards did not hold. Try Fixture B.
-            they_may_trigger_head_defers_to_a_clause_local_anaphor_fixture_b();
-            return;
-        }
-    };
+    let node = parsed
+        .triggers
+        .iter()
+        .find_map(|t| t.execute.as_deref())
+        .expect("UNTESTED FORWARD GUARD: Fixture A must parse to a trigger with an execute chain");
+    assert!(
+        !matches!(&*node.effect, Effect::Unimplemented { .. }),
+        "UNTESTED FORWARD GUARD: Fixture A's intervening-if must hoist, not fail the trigger closed"
+    );
     let slot = node.effect.target_filter().cloned();
-    if !matches!(slot, Some(TargetFilter::DefendingPlayer)) {
-        they_may_trigger_head_defers_to_a_clause_local_anaphor_fixture_b();
-        return;
-    }
+    assert!(
+        matches!(slot, Some(TargetFilter::DefendingPlayer)),
+        "UNTESTED FORWARD GUARD: Fixture A did not reach the DefendingPlayer slot, got {slot:?}"
+    );
     assert_ne!(
         slot,
         Some(TargetFilter::TriggeringPlayer),
@@ -65589,10 +65590,12 @@ fn they_may_trigger_head_defers_to_a_clause_local_anaphor() {
     );
 }
 
-/// Fallback ladder for `they_may_trigger_head_defers_to_a_clause_local_anaphor`:
-/// Fixture B, whose expected slot is `Draw {{ target: ParentTargetController }}`.
-fn they_may_trigger_head_defers_to_a_clause_local_anaphor_fixture_b() {
-    let fixture_b = "Whenever a creature deals combat damage to you, if that creature's controller controls no artifacts, they may draw a card.";
+/// CR 608.2c + CR 608.2d: sibling of
+/// `they_may_trigger_head_defers_to_a_clause_local_anaphor` on a second admitted
+/// anaphor, whose expected slot is `Draw { target: ParentTargetController }`.
+#[test]
+fn they_may_trigger_head_defers_to_a_parent_target_controller_anaphor() {
+    let fixture_b = "Whenever a creature an opponent controls deals combat damage to you, if you have 10 or less life, they may draw a card.";
     let parsed = parse_oracle_text(
         fixture_b,
         "Synthetic Fixture B",
@@ -65605,17 +65608,16 @@ fn they_may_trigger_head_defers_to_a_clause_local_anaphor_fixture_b() {
         .iter()
         .find_map(|t| t.execute.as_deref())
         .expect(
-            "UNTESTED FORWARD GUARD: neither Fixture A nor Fixture B reaches the clobber surface; \
+            "UNTESTED FORWARD GUARD: Fixture B does not reach the clobber surface; \
              the oracle_trigger.rs precedence guard is pinned only structurally, by \
              the_they_may_detector_write_is_guarded_by_an_is_none_precedence_check",
         );
-    // CR 603.4: the fixture's unrecognized intervening-if now fails the trigger closed with a
-    // clause gap, so it no longer reaches the clobber surface. The precedence guard stays
-    // pinned structurally by
-    // `the_they_may_detector_write_is_guarded_by_an_is_none_precedence_check`.
-    if matches!(&*node.effect, Effect::Unimplemented { .. }) {
-        return;
-    }
+    // CR 603.4: an intervening-if the grammar cannot hoist fails the trigger closed, which
+    // would leave this fixture off the clobber surface; the guard must be a supported one.
+    assert!(
+        !matches!(&*node.effect, Effect::Unimplemented { .. }),
+        "UNTESTED FORWARD GUARD: Fixture B's intervening-if must hoist, not fail the trigger closed"
+    );
     let slot = node.effect.target_filter().cloned();
     assert!(
         matches!(slot, Some(TargetFilter::ParentTargetController)),

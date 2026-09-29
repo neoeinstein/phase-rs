@@ -655,6 +655,13 @@ fn double_triggers_while_condition_is_attached() {
         "If a triggered ability of a creature you control triggers while the moon is full, that ability triggers an additional time.",
     )
     .is_none());
+    // The gate runs up to the doubler's own continuation, so a condition that
+    // contains a comma is not truncated at its first ", " into a weaker gate:
+    // the whole text is judged, and an unparseable whole declines.
+    assert!(parse_static_line(
+        "If a triggered ability of a creature you control triggers while you control three or more creatures, and the moon is full, that ability triggers an additional time.",
+    )
+    .is_none());
 }
 
 /// CR 603.2d: Damage-caused trigger doubler (Wayta, Trainer Prodigy).
