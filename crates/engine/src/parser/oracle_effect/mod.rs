@@ -38348,20 +38348,33 @@ pub(crate) fn parse_effect_chain_ir(
             // or engine variant. Placed after the scoped/before the targeted
             // forms; the three subjects are disjoint ("each …" / "for <type>" /
             // "target opponent …").
-            if let Some(new_type_filters) =
-                sequence::try_parse_do_the_same_for_type(normalized_text)
-            {
-                let mut cloned = prev_effect;
-                // Retype every `Typed` target the antecedent exposes (Estrid's
-                // mass `ChangeZoneAll`). Only emit the clone when a substitution
-                // actually happened: an antecedent with no `Typed` target (an
-                // `Unimplemented` head, a bare player effect) must NOT be cloned
-                // verbatim — fall through to a documented strict-failure instead.
-                let mut swapped = false;
-                each_target_filter_mut(&mut cloned, &mut |tf| {
-                    swapped |= replace_type_filters(tf, &new_type_filters);
-                });
-                if swapped {
+            // A bare subtype list ("do the same for Vampire, Dinosaur, and
+            // Merfolk") is one retyped clone per listed subtype.
+            let substitutions: Vec<Vec<TypeFilter>> =
+                match sequence::try_parse_do_the_same_for_type(normalized_text) {
+                    Some(type_filters) => vec![type_filters],
+                    None => sequence::try_parse_do_the_same_for_subtype_list(normalized_text)
+                        .map(|subtypes| subtypes.into_iter().map(|s| vec![s]).collect())
+                        .unwrap_or_default(),
+                };
+            let clones: Vec<Effect> = substitutions
+                .iter()
+                .filter_map(|new_type_filters| {
+                    let mut cloned = prev_effect.clone();
+                    // Retype every `Typed` target the antecedent exposes (Estrid's
+                    // mass `ChangeZoneAll`). Only emit the clone when a substitution
+                    // actually happened: an antecedent with no `Typed` target (an
+                    // `Unimplemented` head, a bare player effect) must NOT be cloned
+                    // verbatim — fall through to a documented strict-failure instead.
+                    let mut swapped = false;
+                    each_target_filter_mut(&mut cloned, &mut |tf| {
+                        swapped |= replace_type_filters(tf, new_type_filters);
+                    });
+                    swapped.then_some(cloned)
+                })
+                .collect();
+            if !clones.is_empty() && clones.len() == substitutions.len() {
+                for cloned in clones {
                     builder
                         .clause(
                             normalized_text,
@@ -38373,8 +38386,8 @@ pub(crate) fn parse_effect_chain_ir(
                             },
                         )
                         .push();
-                    continue;
                 }
+                continue;
             }
         }
 

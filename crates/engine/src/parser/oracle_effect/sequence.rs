@@ -1,8 +1,9 @@
-use crate::parser::oracle_nom::error::{OracleError, OracleResult};
+use crate::parser::oracle_nom::error::{oracle_err, OracleError, OracleResult};
 use nom::branch::alt;
 use nom::bytes::complete::{tag, tag_no_case, take_till, take_until};
 use nom::character::complete::multispace1;
 use nom::combinator::{all_consuming, eof, map, map_opt, opt, recognize, rest, value};
+use nom::multi::separated_list1;
 use nom::sequence::{pair, preceded, terminated};
 use nom::Parser;
 
@@ -13,7 +14,9 @@ use super::super::oracle_nom::enters_under::{
 use super::super::oracle_nom::primitives as nom_primitives;
 use super::super::oracle_nom::primitives::parse_keyword_name;
 use super::super::oracle_target::{parse_target, parse_target_with_ctx, parse_type_phrase_folding};
-use super::super::oracle_util::{contains_possessive, parse_count_expr, parse_ordinal, TextPair};
+use super::super::oracle_util::{
+    contains_possessive, parse_count_expr, parse_ordinal, parse_subtype, TextPair,
+};
 use super::{apply_where_x_to_filter, strip_trailing_where_x};
 use crate::parser::oracle_ir::ast::*;
 use crate::parser::oracle_ir::context::ParseContext;
@@ -2101,13 +2104,13 @@ fn split_comma_clause_boundary(current: &str, remainder: &str) -> Option<(Clause
         // (`try_parse_do_the_same_for_type`), so ONLY a clean pure-type
         // substitution is split off. Richer forms this PR does not model —
         // Gruesome Menagerie's "creature cards with mana value 2 and 3"
-        // (`FilterProp` predicate) and Grim Captain's Call's "Vampire, Dinosaur,
-        // and Merfolk" (type list) — fail the recognizer and stay glued exactly
+        // (`FilterProp` predicate) — fail the recognizer and stay glued exactly
         // as before, keeping this change's blast radius to the handled class.
         // The complete recognizer covers a terminal continuation. A following
         // comma-"then" clause (Glimpse of Tomorrow) is segmented by the same
         // grammar, so we do not weaken the pure-type whole-consumption rule.
         if try_parse_do_the_same_for_type(trimmed).is_some()
+            || try_parse_do_the_same_for_subtype_list(trimmed).is_some()
             || starts_do_the_same_for_type_before_then(after_then)
         {
             return Some((ClauseBoundary::Then, whitespace_len + "then ".len()));
@@ -9333,9 +9336,47 @@ pub(super) fn try_parse_do_the_same_for_type(text: &str) -> Option<Vec<TypeFilte
     // Menagerie's "creature cards with mana value 2 and 3") or a `controller`
     // scope — those need a full replacement-filter/cardinality grammar and must
     // stay strict-failing until it lands (CR #1: a flagged gap beats a misparse).
-    // The multi-type list form (Grim Captain's Call's "Vampire, Dinosaur, and
-    // Merfolk") is already rejected by the non-empty `remainder` guard above.
+    // The bare subtype list form (Grim Captain's Call's "Vampire, Dinosaur, and
+    // Merfolk") is rejected by the non-empty `remainder` guard above and handled
+    // by `try_parse_do_the_same_for_subtype_list`.
     pure_type_substitution(filter)
+}
+
+/// CR 608.2c: Parse "[then] do the same for A, B, and C." where the list is a
+/// bare creature/permanent subtype enumeration (Grim Captain's Call: "Return a
+/// Pirate card from your graveyard to your hand, then do the same for Vampire,
+/// Dinosaur, and Merfolk."). Returns one `Subtype` filter per listed entry; the
+/// chunk loop emits one clone-and-retype sibling of the antecedent per entry,
+/// exactly as the single-type form does. The list needs at least two entries —
+/// a lone type is the single-type form's job — and must consume the whole tail.
+pub(super) fn try_parse_do_the_same_for_subtype_list(text: &str) -> Option<Vec<TypeFilter>> {
+    let lower = text.to_lowercase();
+    let (subtypes, _) = nom_on_lower(text, &lower, |i| {
+        let (i, _) = opt(tag("then ")).parse(i)?;
+        let (i, _) = tag::<_, _, OracleError<'_>>("do the same for ").parse(i)?;
+        let (i, subtypes) = separated_list1(
+            alt((
+                tag(", and/or "),
+                tag(", and "),
+                tag(", or "),
+                tag(" and/or "),
+                tag(" and "),
+                tag(" or "),
+                tag(", "),
+            )),
+            parse_subtype_token,
+        )
+        .parse(i)?;
+        let (i, _) = terminated(opt(tag(".")), eof).parse(i)?;
+        Ok((i, subtypes))
+    })?;
+    (subtypes.len() >= 2).then(|| subtypes.into_iter().map(TypeFilter::Subtype).collect())
+}
+
+/// Nom adapter over `parse_subtype` (plural- and case-aware canonicalization).
+fn parse_subtype_token(input: &str) -> OracleResult<'_, String> {
+    let (subtype, consumed) = parse_subtype(input).ok_or_else(|| oracle_err(input))?;
+    Ok((&input[consumed..], subtype))
 }
 
 /// Recognize a pure type-substitution segment when it is immediately followed
@@ -9713,13 +9754,12 @@ mod tests {
     // or the broader "repeat this process for" family are NOT modeled by the
     // type-substitution path and must be rejected, so they stay strict-failing
     // until the full replacement-filter/cardinality grammar lands (Gruesome
-    // Menagerie, Grim Captain's Call, Firemind's Foresight) — CR #1: a flagged
+    // Menagerie, Firemind's Foresight) — CR #1: a flagged
     // gap beats a silent misparse.
     #[test]
     fn do_the_same_for_type_rejects_unmodeled_continuations() {
         for phrasing in [
             "do the same for creature cards with mana value 2 and 3",
-            "do the same for Vampire, Dinosaur, and Merfolk",
             "do the same for creature cards with flying",
             "repeat this process for instant cards",
         ] {
@@ -9727,6 +9767,49 @@ mod tests {
                 try_parse_do_the_same_for_type(phrasing),
                 None,
                 "must reject the unmodeled continuation {phrasing:?}"
+            );
+        }
+    }
+
+    // CR 608.2c: a bare subtype enumeration yields one `Subtype` substitution per
+    // entry, across comma / "and" / "and/or" list shapes.
+    #[test]
+    fn do_the_same_for_subtype_list_yields_one_filter_per_entry() {
+        let expected: Vec<TypeFilter> = ["Vampire", "Dinosaur", "Merfolk"]
+            .into_iter()
+            .map(|s| TypeFilter::Subtype(s.to_string()))
+            .collect();
+        for phrasing in [
+            "then do the same for Vampire, Dinosaur, and Merfolk.",
+            "do the same for Vampires, Dinosaurs and Merfolk",
+            "do the same for Vampire, Dinosaur, and/or Merfolk.",
+        ] {
+            assert_eq!(
+                try_parse_do_the_same_for_subtype_list(phrasing),
+                Some(expected.clone()),
+                "phrasing {phrasing:?}"
+            );
+        }
+        assert_eq!(
+            try_parse_do_the_same_for_subtype_list("do the same for Vampire and Merfolk")
+                .map(|v| v.len()),
+            Some(2)
+        );
+    }
+
+    // A lone type, a non-subtype list member, or trailing text is not this form.
+    #[test]
+    fn do_the_same_for_subtype_list_rejects_non_lists() {
+        for phrasing in [
+            "do the same for Aura cards",
+            "do the same for Vampire",
+            "do the same for Vampire, Dinosaur, and creature cards with flying",
+            "do the same for Vampire, Dinosaur, and Merfolk, then shuffle",
+        ] {
+            assert_eq!(
+                try_parse_do_the_same_for_subtype_list(phrasing),
+                None,
+                "must reject {phrasing:?}"
             );
         }
     }
