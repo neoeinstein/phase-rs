@@ -1217,6 +1217,26 @@ fn parse_damage_to_qualifier_preserves_player_recipients() {
     }
 }
 
+#[test]
+fn parse_damage_to_qualifier_defending_player_is_player_recipient() {
+    // CR 506.2 + CR 120.3: "defending player" (with or without "the") is the
+    // attacked player, i.e. a player recipient, so a damage trigger naming it
+    // scopes "that player" to the damaged (triggering) player.
+    for text in ["to defending player", "to the defending player"] {
+        assert_eq!(parse_damage_to_qualifier(text), Some(TargetFilter::Player));
+    }
+    for cond in [
+        "whenever enchanted creature deals combat damage to defending player",
+        "whenever equipped creature deals combat damage to the defending player",
+    ] {
+        assert_eq!(
+            relative_player_scope_for_condition(cond),
+            Some(ControllerRef::TriggeringPlayer),
+            "{cond}"
+        );
+    }
+}
+
 // --- CR 120.1 + CR 120.1a: "or battle" damage-recipient qualifier ---
 
 #[test]

@@ -5083,10 +5083,7 @@ pub(super) fn parse_for_each_opponent_target_fanout_clause(
 fn is_per_opponent_target_fanout_clause(clause: &ParsedEffectClause) -> bool {
     if matches!(
         clause.effect,
-        Effect::Choose { .. }
-            | Effect::ChooseCard { .. }
-            | Effect::CopyTokenOf { .. }
-            | Effect::TargetOnly { .. }
+        Effect::Choose { .. } | Effect::ChooseCard { .. } | Effect::TargetOnly { .. }
     ) {
         return false;
     }

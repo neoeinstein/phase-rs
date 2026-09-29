@@ -12725,6 +12725,13 @@ fn parse_damage_to_qualifier_with_rest(after_verb: &str) -> OracleResult<'_, Tar
             alt((tag("a player or battle"), tag("a player or a battle"))),
         ),
         value(TargetFilter::Player, tag("a player")),
+        // CR 506.2: "defending player" names the player being attacked in combat,
+        // so damage dealt to them is damage to a player (CR 120.3) and the damaged
+        // player is the trigger's "that player".
+        value(
+            TargetFilter::Player,
+            preceded(opt(tag("the ")), tag("defending player")),
+        ),
         parse_opponent_or_battle_recipient,
         parse_opponent_player_recipient,
         value(TargetFilter::Controller, tag("you")),

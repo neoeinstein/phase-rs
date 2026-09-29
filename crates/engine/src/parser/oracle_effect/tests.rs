@@ -6214,6 +6214,53 @@ fn target_subject_damage_inherited_self_leg_binds_root_slot() {
     assert!(self_damage.sub_ability.is_none());
 }
 
+/// CR 608.2c + CR 115.1a: "for each opponent, you create a token that's a copy of
+/// up to one target creature that player controls" uses the per-opponent target
+/// fanout: each target slot pairs with an opponent (`TargetPlayer`), the optional
+/// "up to one" becomes a min-0 slot count bounded by the opponent count, and no
+/// `repeat_for` count is left behind that would drop the player binding.
+#[test]
+fn for_each_opponent_copy_token_of_that_players_creature_uses_target_fanout() {
+    for (text, min) in [
+        (
+            "For each opponent, you create a token that's a copy of up to one target creature that player controls.",
+            0,
+        ),
+        (
+            "For each opponent, you create a token that's a copy of target creature that player controls.",
+            1,
+        ),
+    ] {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        assert!(def.repeat_for.is_none(), "{text}");
+        assert_eq!(
+            def.multi_target,
+            Some(MultiTargetSpec::bounded(
+                min,
+                QuantityExpr::Ref {
+                    qty: QuantityRef::PlayerCount {
+                        filter: PlayerFilter::Opponent,
+                    },
+                },
+            )),
+            "{text}"
+        );
+        let Effect::CopyTokenOf { target, .. } = def.effect.as_ref() else {
+            panic!("{text}: expected CopyTokenOf, got {:?}", def.effect);
+        };
+        assert!(
+            matches!(
+                target,
+                TargetFilter::Typed(TypedFilter {
+                    controller: Some(ControllerRef::TargetPlayer),
+                    ..
+                })
+            ),
+            "{text}: 'that player controls' must bind to the paired opponent, got {target:?}"
+        );
+    }
+}
+
 /// Chandra, Pyromaster's source is the planeswalker itself, not an explicitly
 /// targeted subject. Its recipient damage chain must therefore stay on the
 /// ordinary chain path so the following CantBlock rider remains attached.
