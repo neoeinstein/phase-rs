@@ -88,8 +88,9 @@ use super::{
     rewrite_grant_parent_to_filter, rewrite_parent_targets_to_tracked_set,
     rewrite_plural_library_recall_to_tracked_set, rewrite_rounding_mode,
     rewrite_singular_battlefield_recall_to_self, rewrite_that_type_mana_instead,
-    singular_battlefield_recall, stamp_delayed_returns, try_fold_token_repeat_into_count,
-    wire_optional_cast_decline_fallback, PrintedColorCarrier, PrintedColorCarrierScope,
+    singular_battlefield_recall, stamp_delayed_returns, starts_with_plural_subject_anaphor,
+    try_fold_token_repeat_into_count, wire_optional_cast_decline_fallback, PrintedColorCarrier,
+    PrintedColorCarrierScope,
 };
 
 /// CR 601.2c: True when the assembled head chose one or more players at
@@ -3543,6 +3544,18 @@ pub(crate) fn assemble_effect_chain(ir: &EffectChainIr) -> AbilityDefinition {
                                 &mut current.effect,
                                 cast_anaphor_is_exiled,
                             );
+                        }
+                    }
+                } else if starts_with_plural_subject_anaphor(&source_text_lower) {
+                    // CR 608.2c: "They are 5/5 Elemental creatures …" after
+                    // publishing instructions (a multi-slot "return up to one
+                    // target A, up to one target B, …" list) names every object
+                    // they published, not only the last link's `ParentTarget`.
+                    // Only a grant binds the set; "They reveal their hand" is a
+                    // player subject and keeps its binding.
+                    for current in &mut current_defs {
+                        if matches!(&*current.effect, Effect::GenericEffect { .. }) {
+                            rewrite_parent_targets_to_tracked_set(&mut current.effect, false);
                         }
                     }
                 }

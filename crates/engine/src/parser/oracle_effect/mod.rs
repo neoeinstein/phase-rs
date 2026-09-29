@@ -32465,6 +32465,14 @@ fn contains_explicit_tracked_set_pronoun(lower: &str) -> bool {
         || scan_contains_phrase(lower, "the exiled creature")
 }
 
+/// CR 608.2c: a clause led by a plural subject anaphor ("They are 5/5 …",
+/// "Those permanents gain …") names the set the earlier instructions published.
+fn starts_with_plural_subject_anaphor(lower: &str) -> bool {
+    alt((tag::<_, _, OracleError<'_>>("they "), tag("those ")))
+        .parse(lower.trim_start())
+        .is_ok()
+}
+
 /// CR 603.7: Detect implicit anaphora when preceded by an exile effect.
 /// Context-sensitive — only matches when the pronoun is in a recall
 /// construction whose destination is one of the supported zones.
@@ -41698,19 +41706,8 @@ pub(crate) fn parse_effect_chain_ir(
                 })
             );
 
-        // CR 601.2c + CR 608.2c + CR 608.2d: a multi-slot target list is one
-        // link per slot. A following "they"/"it" names the objects of all slots,
-        // not the last, and a shared "you may" has no per-link form.
-        let previous_is_list = builder.clauses().last().is_some_and(|previous| {
-            multi_target_list::is_multi_slot_list(previous.multi_target.as_ref(), &previous.parsed)
-        });
-        if previous_is_list {
-            multi_target_list::bind_slot_back_reference(
-                &mut clause,
-                normalized_text,
-                builder.clauses().len() == 1,
-            );
-        }
+        // CR 601.2c + CR 608.2d: a multi-slot target list is one link per slot,
+        // and a shared "you may" over it has no per-link form.
         if is_optional && multi_target_list::is_multi_slot_list(multi_target.as_ref(), &clause) {
             multi_target_list::fail_closed_optional_list(&mut clause, normalized_text);
         }

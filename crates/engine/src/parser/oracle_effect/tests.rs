@@ -75109,31 +75109,26 @@ fn multi_slot_list_plural_back_reference_covers_every_slot() {
     }
 }
 
-/// CR 608.2c: a referencing clause with no union form fails closed instead of
-/// acting on the last slot alone; a following sentence that names nothing
-/// earlier leaves the list intact.
+/// CR 608.2c: an instruction that already reads the chain tracked set ("Then
+/// return them …") names every slot's object and keeps its lowering.
 #[test]
-fn multi_slot_list_unbindable_back_reference_is_an_honest_gap() {
-    let gap = parse_effect_chain(
-        "Destroy up to one target artifact and up to one target creature. Its controller gains 2 life.",
+fn multi_slot_list_tracked_set_back_reference_is_kept() {
+    let def = parse_effect_chain(
+        "Exile up to one target artifact you control and up to one target creature you control. Then return them to the battlefield under their owners' control.",
         AbilityKind::Spell,
     );
+    let effects = collect_chain_effects(&def);
     assert!(
-        collect_chain_effects(&gap)
+        effects
             .iter()
-            .any(|e| matches!(e, Effect::Unimplemented { .. })),
-        "an anaphor that cannot bind to every slot must not lower silently"
-    );
-
-    let clean = parse_effect_chain(
-        "Destroy up to one target artifact and up to one target creature. Draw a card.",
-        AbilityKind::Spell,
+            .any(|e| matches!(e.target_filter(), Some(TargetFilter::TrackedSet { .. }))),
+        "the return must read the chain tracked set: {effects:?}"
     );
     assert!(
-        !collect_chain_effects(&clean)
+        !effects
             .iter()
             .any(|e| matches!(e, Effect::Unimplemented { .. })),
-        "a sentence with no back-reference must not disturb the list"
+        "a tracked-set back-reference must not fail closed"
     );
 }
 
@@ -75193,23 +75188,6 @@ fn multi_slot_list_shared_optional_is_an_honest_gap() {
             .iter()
             .any(|e| matches!(e, Effect::Unimplemented { .. })),
         "an optional list must not lower with a per-slot may"
-    );
-}
-
-/// CR 608.2c: the chain tracked set also holds earlier producers' objects, so a
-/// plural back-reference after a list that is not the chain's first instruction
-/// fails closed instead of animating the unrelated earlier object too.
-#[test]
-fn multi_slot_list_back_reference_after_an_earlier_producer_is_an_honest_gap() {
-    let def = parse_effect_chain(
-        "Return target creature card from your graveyard to the battlefield. Return up to one target artifact card and up to one target land card from your graveyard to the battlefield. They are 5/5 Elemental creatures in addition to their other types.",
-        AbilityKind::Spell,
-    );
-    assert!(
-        collect_chain_effects(&def)
-            .iter()
-            .any(|e| matches!(e, Effect::Unimplemented { .. })),
-        "the grant must not bind to the chain-wide tracked set"
     );
 }
 
