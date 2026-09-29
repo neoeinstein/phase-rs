@@ -11690,7 +11690,7 @@ fn parse_cant_become_untapped_replacement(
 /// (the same subject-typing helper every other damage-source clause in this
 /// module already uses), which itself falls back to `parse_type_phrase_folding` — the
 /// SAME combinator that already resolves "unblocked creatures" / "unblocked
-/// attacking creatures" to `FilterProp::Unblocked` via
+/// attacking creatures" to `FilterProp::BlockStatus { Unblocked }` via
 /// `parse_combat_status_prefix` (`oracle_target.rs`), proven by the existing
 /// `parse_type_phrase_unblocked_attacking_creatures_you_control` test. This
 /// function adds NO new unblocked-detection — only the "by ... is dealt to"

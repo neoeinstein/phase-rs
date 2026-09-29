@@ -11517,7 +11517,7 @@ mod tests {
 
     // CR 509.1h: "Target unblocked attacking creature becomes blocked." parses to
     // `Effect::BecomeBlocked` whose target is a Typed(creature) filter carrying
-    // both FilterProp::Unblocked and FilterProp::Attacking. SHAPE test — runtime
+    // both FilterProp::BlockStatus { Unblocked } and FilterProp::Attacking. SHAPE test — runtime
     // semantics are covered by the cast-pipeline tests in
     // tests/dazzling_beauty_become_blocked.rs.
     #[test]
