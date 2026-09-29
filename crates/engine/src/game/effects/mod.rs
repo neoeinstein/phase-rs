@@ -10147,7 +10147,6 @@ fn filter_requires_parent_target_object(filter: &TargetFilter) -> bool {
             matches!(
                 property,
                 FilterProp::DistinctFrom { reference }
-                    | FilterProp::SharesQuality { reference: Some(reference), .. }
                     if filter_requires_parent_target_object(reference)
             )
         }),
@@ -10192,20 +10191,6 @@ fn filter_refs_parent_target_metadata(filter: &TargetFilter) -> bool {
 
 /// CR 115.6: True when the resolving ability head permits zero targets and the
 /// controller chose none (no `TargetRef::Object` in `ability.targets`).
-/// CR 608.2c + CR 608.2h: A `repeat_for` over a tracked set binds the parent
-/// object PER ITERATION from the set's own members (the per-member rebind in
-/// `resolve_chain_body`), so a head that chose no object target does not leave
-/// it without an antecedent (Chaotic Transformation's reveal follows the last,
-/// possibly unfilled, "up to one target" exile slot).
-fn repeat_for_supplies_parent_members(ability: &ResolvedAbility) -> bool {
-    matches!(
-        &ability.repeat_for,
-        Some(QuantityExpr::Ref {
-            qty: QuantityRef::TrackedSetSize | QuantityRef::FilteredTrackedSetSize { .. }
-        })
-    )
-}
-
 fn optional_head_declined_all_object_targets(ability: &ResolvedAbility) -> bool {
     ability.targeting_is_optional()
         && !ability
@@ -10238,11 +10223,6 @@ fn optional_head_declined_all_object_targets(ability: &ResolvedAbility) -> bool 
 ///    only when `attachment.is_context_ref()`, mirroring the guards above (a
 ///    non-context-ref `attachment` can never be a parent-ref, so excluding it
 ///    cannot change the gate result).
-///  * `Effect::RevealUntil` surfaces `player` through `target_filter()` only when it
-///    is a target slot. A context-ref `player` (`ParentTargetController`) and the
-///    match `filter` (which can carry `SharesQuality { reference: ParentTarget }`)
-///    are hidden, so both are surfaced here for the for-each rebind (Chaotic
-///    Transformation).
 ///  * `Effect::UnattachAll` surfaces `target` but hides `attachment`, exactly as
 ///    `Effect::Attach` does; the same context-ref guard applies. A delayed
 ///    "when you lose control of this, unattach it" trigger rebinds the per-source
@@ -10280,17 +10260,6 @@ fn effect_parent_ref_slots(effect: &Effect) -> Vec<&TargetFilter> {
         Effect::Attach { attachment, .. } if attachment.is_context_ref() => slots.push(attachment),
         Effect::UnattachAll { attachment, .. } if attachment.is_context_ref() => {
             slots.push(attachment)
-        }
-        // CR 608.2c + CR 109.5: `RevealUntil` hides both its context-ref revealer
-        // ("its controller reveals cards from the top of their library") and its
-        // match filter ("until they reveal a card that shares a card type with
-        // it") behind `target_filter()`, which surfaces `player` only when it is
-        // a stack-time target slot. Either can name the iterated parent object.
-        Effect::RevealUntil { player, filter, .. } => {
-            if player.is_context_ref() {
-                slots.push(player);
-            }
-            slots.push(filter);
         }
         _ => {}
     }
@@ -10437,12 +10406,6 @@ pub(crate) fn filter_refs_parent_target(filter: &TargetFilter) -> bool {
                     matches!(
                         prop,
                         FilterProp::DistinctFrom { reference }
-                            if filter_refs_parent_target(reference)
-                    ) || matches!(
-                        prop,
-                        // CR 608.2c + CR 608.2h: "shares a card type with it" reads
-                        // the iterated parent object's last-known card types.
-                        FilterProp::SharesQuality { reference: Some(reference), .. }
                             if filter_refs_parent_target(reference)
                     )
                 })
@@ -16139,23 +16102,6 @@ fn resolve_chain_body(
                         .chain_tracked_set_id
                         .and_then(|id| state.tracked_object_sets.get(&id).cloned())
                         .unwrap_or_default(),
-                    // CR 608.2c + CR 608.2h: a filtered/cause-bound tracked-set
-                    // count ("for each permanent exiled this way") binds the same
-                    // members its count is taken from — one authority, so the
-                    // per-iteration subject (and its last-known controller) is
-                    // the i-th exiled object. The count stays on
-                    // `base_iterations`, exactly as `TrackedSetSize` does.
-                    Some(QuantityExpr::Ref {
-                        qty: QuantityRef::FilteredTrackedSetSize { filter, caused_by },
-                    }) if effect_refs_parent_target(&effective.effect) => {
-                        let ctx = filter::FilterContext::from_ability_with_controller(
-                            ability,
-                            ability.original_controller.unwrap_or(ability.controller),
-                        );
-                        crate::game::quantity::filtered_tracked_set_members(
-                            state, filter, *caused_by, &ctx,
-                        )
-                    }
                     Some(QuantityExpr::Ref {
                         qty: QuantityRef::ObjectCount { filter },
                     }) if effect_iterates_over_parent_target(&effective.effect) => {
@@ -18316,7 +18262,6 @@ fn resolve_chain_body(
             && ability.targets.is_empty()
             && effect_refs_parent_target(&sub.effect)
             && optional_head_declined_all_object_targets(ability)
-            && !repeat_for_supplies_parent_members(sub)
         {
             // CR 115.6 + CR 608.2c (issue #5287): Optional multi-target / up-to-one
             // head legally chose zero object targets — a ParentTarget consumer
@@ -30854,254 +30799,6 @@ mod tests {
             .expect("second iteration must be stashed for resumption");
         assert_eq!(pending.next_iteration, 1);
         assert_eq!(pending.total_iterations, 2);
-        assert_eq!(pending.tracked_members, vec![creature_a, creature_b]);
-    }
-
-    /// CR 608.2c + CR 608.2h: `RevealUntil` hides its context-ref revealer and
-    /// its match filter behind `target_filter()`, so both must be surfaced as
-    /// parent-ref slots for a for-each body to rebind per member (Chaotic
-    /// Transformation: "its controller reveals ... a card that shares a card
-    /// type with it").
-    #[test]
-    fn effect_refs_parent_target_sees_reveal_until_hidden_slots() {
-        use crate::types::ability::{SharedQuality, SharedQualityRelation};
-
-        let reveal_until = |player: TargetFilter, filter: TargetFilter| Effect::RevealUntil {
-            player,
-            filter,
-            count: QuantityExpr::Fixed { value: 1 },
-            matched_disposition: crate::types::ability::RevealUntilDisposition::KeepEach,
-            kept_destination: Zone::Battlefield,
-            rest_destination: Zone::Library,
-            rest_order: crate::types::ability::DigRestOrder::Preserve,
-            enter_tapped: crate::types::zones::EtbTapState::Unspecified,
-            enters_attacking: false,
-            kept_optional_to: None,
-            enters_under: None,
-            kept_destination_if: None,
-        };
-        let plain_card = TargetFilter::Typed(TypedFilter::card());
-        let shares_type_with_parent =
-            TargetFilter::Typed(
-                TypedFilter::card().properties(vec![FilterProp::SharesQuality {
-                    quality: SharedQuality::CardType,
-                    reference: Some(Box::new(TargetFilter::ParentTarget)),
-                    relation: SharedQualityRelation::Shares,
-                }]),
-            );
-
-        // Revealer axis: a parent-target-controller revealer alone is enough.
-        assert!(effect_refs_parent_target(&reveal_until(
-            TargetFilter::ParentTargetController,
-            plain_card.clone()
-        )));
-        // Filter axis: a `SharesQuality { reference: ParentTarget }` match filter
-        // alone is enough, even with a plain "you reveal" revealer.
-        assert!(effect_refs_parent_target(&reveal_until(
-            TargetFilter::Controller,
-            shares_type_with_parent
-        )));
-        // Negative: neither axis names the parent.
-        assert!(!effect_refs_parent_target(&reveal_until(
-            TargetFilter::Controller,
-            plain_card
-        )));
-    }
-
-    /// CR 608.2c + CR 608.2h: `filtered_tracked_set_members` is the single
-    /// authority for `FilteredTrackedSetSize`: it applies the inner filter and,
-    /// when bound, the producer-action cause to the most recent tracked set.
-    #[test]
-    fn filtered_tracked_set_members_respects_filter_and_caused_by() {
-        use crate::types::ability::ThisWayCause;
-
-        let mut state = GameState::new_two_player(42);
-        let mut member = |card: u64, core: CoreType| {
-            let id = create_object(
-                &mut state,
-                CardId(card),
-                PlayerId(1),
-                format!("Member {card}"),
-                Zone::Exile,
-            );
-            state.objects.get_mut(&id).unwrap().card_types.core_types = vec![core];
-            id
-        };
-        let exiled_creature = member(70, CoreType::Creature);
-        let exiled_artifact = member(71, CoreType::Artifact);
-        let sacrificed_creature = member(72, CoreType::Creature);
-
-        let set_id = TrackedSetId(state.next_tracked_set_id);
-        state.next_tracked_set_id += 1;
-        state.tracked_object_sets.insert(
-            set_id,
-            vec![exiled_creature, exiled_artifact, sacrificed_creature],
-        );
-        state.tracked_set_member_causes.insert(
-            set_id,
-            [
-                (exiled_creature, ThisWayCause::Exiled),
-                (exiled_artifact, ThisWayCause::Exiled),
-                (sacrificed_creature, ThisWayCause::Sacrificed),
-            ]
-            .into_iter()
-            .collect(),
-        );
-
-        let ctx = filter::FilterContext::from_source_with_controller(ObjectId(9000), PlayerId(0));
-        let creature = TargetFilter::Typed(TypedFilter::creature());
-        let permanent = TargetFilter::Typed(TypedFilter::permanent());
-        let members = |filter: &TargetFilter, cause: Option<ThisWayCause>| {
-            crate::game::quantity::filtered_tracked_set_members(&state, filter, cause, &ctx)
-        };
-
-        assert_eq!(
-            members(&creature, None),
-            vec![exiled_creature, sacrificed_creature],
-            "the inner filter narrows the set"
-        );
-        assert_eq!(
-            members(&permanent, Some(ThisWayCause::Exiled)),
-            vec![exiled_creature, exiled_artifact],
-            "caused_by admits only members produced by that action"
-        );
-        assert_eq!(
-            members(&creature, Some(ThisWayCause::Exiled)),
-            vec![exiled_creature],
-            "filter and cause compose"
-        );
-        assert_eq!(
-            crate::game::quantity::resolve_quantity(
-                &state,
-                &QuantityExpr::Ref {
-                    qty: QuantityRef::FilteredTrackedSetSize {
-                        filter: Box::new(permanent),
-                        caused_by: Some(ThisWayCause::Exiled),
-                    },
-                },
-                PlayerId(0),
-                ObjectId(9000),
-            ),
-            2,
-            "the count is the member vector's length"
-        );
-    }
-
-    /// CR 603.7 + CR 109.5 + CR 608.2c: the Winds of Abandon shape driven by a
-    /// FILTERED tracked-set count ("for each permanent exiled this way"), the
-    /// form real cards print (Winds of Abandon, Martyr's Cry, Terastodon).
-    /// `FilteredTrackedSetSize` must bind the same members its count is taken
-    /// from: the filter drops the non-matching land, and the first iteration
-    /// prompts the controller of the FIRST matching member.
-    #[test]
-    fn filtered_tracked_set_size_rebinds_parent_target_per_member() {
-        use crate::types::ability::{SearchSelectionConstraint, ThisWayCause};
-        use crate::types::format::FormatConfig;
-
-        let mut state = GameState::new(FormatConfig::standard(), 3, 42);
-        let mut exiled = |card: u64, owner: PlayerId, core: CoreType| {
-            let id = create_object(
-                &mut state,
-                CardId(card),
-                owner,
-                format!("Exiled {card}"),
-                Zone::Exile,
-            );
-            let obj = state.objects.get_mut(&id).unwrap();
-            obj.controller = owner;
-            obj.card_types.core_types = vec![core];
-            id
-        };
-        let creature_a = exiled(50, PlayerId(1), CoreType::Creature);
-        let land = exiled(52, PlayerId(1), CoreType::Land);
-        let creature_b = exiled(51, PlayerId(2), CoreType::Creature);
-
-        for (lib_owner, card_id, name) in [
-            (PlayerId(1), CardId(60), "Forest"),
-            (PlayerId(2), CardId(61), "Plains"),
-        ] {
-            let library_land = create_object(
-                &mut state,
-                card_id,
-                lib_owner,
-                name.to_string(),
-                Zone::Library,
-            );
-            let obj = state.objects.get_mut(&library_land).unwrap();
-            obj.card_types.core_types = vec![CoreType::Land];
-            obj.card_types
-                .supertypes
-                .push(crate::types::card_type::Supertype::Basic);
-        }
-
-        let set_id = TrackedSetId(state.next_tracked_set_id);
-        state.next_tracked_set_id += 1;
-        state
-            .tracked_object_sets
-            .insert(set_id, vec![creature_a, land, creature_b]);
-        state.tracked_set_member_causes.insert(
-            set_id,
-            [creature_a, land, creature_b]
-                .into_iter()
-                .map(|id| (id, ThisWayCause::Exiled))
-                .collect(),
-        );
-        state.chain_tracked_set_id = Some(set_id);
-
-        let mut ability = ResolvedAbility::new(
-            Effect::SearchLibrary {
-                filter: TargetFilter::Typed(TypedFilter::land().properties(vec![
-                    FilterProp::HasSupertype {
-                        value: crate::types::card_type::Supertype::Basic,
-                    },
-                ])),
-                count: QuantityExpr::Fixed { value: 1 },
-                reveal: false,
-                target_player: Some(TargetFilter::ParentTargetController),
-                selection_constraint: SearchSelectionConstraint::None,
-                split: None,
-                source_zones: vec![Zone::Library],
-            },
-            vec![],
-            ObjectId(9000),
-            PlayerId(0),
-        );
-        ability.repeat_for = Some(QuantityExpr::Ref {
-            qty: QuantityRef::FilteredTrackedSetSize {
-                filter: Box::new(TargetFilter::Typed(TypedFilter::creature())),
-                caused_by: Some(ThisWayCause::Exiled),
-            },
-        });
-
-        let mut events = Vec::new();
-        // Depth=1: inside a larger chain, so the chain-local tracked set survives.
-        resolve_ability_chain(&mut state, &ability, &mut events, 1).unwrap();
-
-        match &state.waiting_for {
-            WaitingFor::SearchChoice { player, .. } => assert_eq!(
-                *player,
-                PlayerId(1),
-                "first iteration must prompt the controller of the first matching member"
-            ),
-            other => panic!("expected SearchChoice, got {other:?}"),
-        }
-        let pending = state
-            .active_repeat_for()
-            .or_else(|| {
-                state
-                    .resolution_stack
-                    .active_predecessor()
-                    .and_then(|frame| match frame {
-                        ResolutionFrame::RepeatFor(pending) => Some(pending),
-                        _ => None,
-                    })
-            })
-            .expect("second iteration must be stashed for resumption");
-        assert_eq!(pending.next_iteration, 1);
-        assert_eq!(
-            pending.total_iterations, 2,
-            "the non-matching land is not an iteration"
-        );
         assert_eq!(pending.tracked_members, vec![creature_a, creature_b]);
     }
 

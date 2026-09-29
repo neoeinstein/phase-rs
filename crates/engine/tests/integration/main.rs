@@ -1763,7 +1763,6 @@ mod zero_life_mid_cast_payment;
 mod zhulodok_double_cascade;
 
 mod arm_the_cathars_conjunct_anaphor_p6;
-mod chaotic_transformation_per_member_reveal;
 mod context_ref_slot_hygiene;
 mod controls_commander_statics;
 mod declared_target_damage_source;
