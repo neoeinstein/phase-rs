@@ -2653,7 +2653,8 @@ fn parse_subject_application_for(
         .is_ok()
     {
         let (filter, _) = parse_target_with_ctx(&subject["another ".len()..], ctx);
-        let filter = add_another_property(filter);
+        let mut filter = filter;
+        imperative::add_another_to_filter_recursive(&mut filter);
         return subject_filter_application(filter, true);
     }
     if tag::<_, _, OracleError<'_>>("target ")
@@ -2985,11 +2986,10 @@ fn parse_subject_application_for(
         // player's creatures.
         let (filter, rest) = parse_target_with_ctx(&normalized, ctx);
         if rest.trim().is_empty() {
-            let filter = if had_other {
-                add_another_property(filter)
-            } else {
-                filter
-            };
+            let mut filter = filter;
+            if had_other {
+                imperative::add_another_to_filter_recursive(&mut filter);
+            }
             return subject_filter_application(filter, false);
         }
     }
@@ -8066,36 +8066,6 @@ pub(super) fn find_predicate_start(text: &str) -> Option<usize> {
     }
 
     None
-}
-
-/// Add `FilterProp::Another` to a lone `Typed` target filter, ensuring the
-/// source is excluded.
-///
-/// Composite (`Or`/`And`) classes use the recursion-aware
-/// `imperative::add_another_to_filter_recursive` instead — this helper is the
-/// single-`Typed` form consumed by the subject-composition paths below.
-fn add_another_property(filter: TargetFilter) -> TargetFilter {
-    match filter {
-        TargetFilter::Typed(mut tf) => {
-            if !tf
-                .properties
-                .iter()
-                .any(|p| matches!(p, FilterProp::Another))
-            {
-                tf.properties.push(FilterProp::Another);
-            }
-            TargetFilter::Typed(tf)
-        }
-        // "another target Wolf or Werewolf": the source is excluded from every
-        // leg of the union, so the exclusion distributes over it.
-        TargetFilter::Or { filters } => TargetFilter::Or {
-            filters: filters.into_iter().map(add_another_property).collect(),
-        },
-        TargetFilter::And { filters } => TargetFilter::And {
-            filters: filters.into_iter().map(add_another_property).collect(),
-        },
-        other => other,
-    }
 }
 
 #[cfg(test)]

@@ -74898,6 +74898,12 @@ fn damage_all_each_object_type_list_unions_every_leg() {
             "~ deals 2 damage to each artifact and each enchantment",
             vec![TypeFilter::Artifact, TypeFilter::Enchantment],
         ),
+        // A keyword-negation suffix on the first leg must not swallow the
+        // " and " that joins the next "each" leg (Magmaquake, Planequake).
+        (
+            "~ deals 3 damage to each creature without flying and each planeswalker",
+            vec![TypeFilter::Creature, TypeFilter::Planeswalker],
+        ),
     ] {
         let e = parse_effect(text);
         let Effect::DamageAll {
@@ -74917,6 +74923,39 @@ fn damage_all_each_object_type_list_unions_every_leg() {
             expected.iter().map(|t| vec![t.clone()]).collect::<Vec<_>>(),
             "{text}"
         );
+    }
+}
+
+/// A keyword list joined by "and" stays one leg with every keyword, while a
+/// trailing "and each <type>" is left for the enclosing recipient list.
+#[test]
+fn keyword_suffix_lists_keep_every_keyword_on_one_leg() {
+    for (text, negated) in [
+        (
+            "~ deals 2 damage to each creature with flying and first strike",
+            false,
+        ),
+        (
+            "~ deals 2 damage to each creature without flying and first strike",
+            true,
+        ),
+    ] {
+        let e = parse_effect(text);
+        let Effect::DamageAll { target, .. } = &e else {
+            panic!("{text}: expected DamageAll, got {e:?}");
+        };
+        let props = &typed_of(target).properties;
+        let keywords = props
+            .iter()
+            .filter(|p| {
+                if negated {
+                    matches!(p, FilterProp::WithoutKeyword { .. })
+                } else {
+                    matches!(p, FilterProp::WithKeyword { .. })
+                }
+            })
+            .count();
+        assert_eq!(keywords, 2, "{text}");
     }
 }
 

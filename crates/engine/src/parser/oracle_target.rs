@@ -3374,10 +3374,7 @@ pub fn parse_type_phrase_folding_with_ctx<'a>(
                 } else {
                     properties.clone()
                 };
-                return (
-                    distribute_trailing_core_type(finalize_or_disjunction(combined, &shared_props)),
-                    final_rest,
-                );
+                return (finalize_or_disjunction(combined, &shared_props), final_rest);
             }
         }
     }
@@ -4926,6 +4923,7 @@ fn stack_spell_filter(mut typed: TypedFilter) -> TargetFilter {
 fn finalize_or_disjunction(combined: TargetFilter, shared_props: &[FilterProp]) -> TargetFilter {
     let combined = distribute_controller_to_or(combined);
     let combined = distribute_core_type_to_or(combined);
+    let combined = distribute_trailing_core_type(combined);
     let combined = distribute_neg_type_filters_to_or(combined);
     let combined = distribute_shared_properties(combined, shared_props);
     distribute_properties_to_or(combined)
@@ -7704,6 +7702,18 @@ fn parse_counters_put_this_turn_clause(input: &str) -> Option<(FilterProp, usize
     None
 }
 
+/// A keyword-list separator followed by something other than a keyword, where
+/// that something opens another leg of the enclosing list — a type word ("creature
+/// with disturb, or enchantment") or an "each" leg ("each creature without flying
+/// and each planeswalker") — belongs to the enclosing list and stays unconsumed.
+fn separator_continues_enclosing_list(after_separator: &str) -> bool {
+    parse_leading_keyword_match(after_separator).is_none()
+        && (starts_with_type_word(after_separator)
+            || tag::<_, _, OracleError<'_>>("each ")
+                .parse(after_separator)
+                .is_ok())
+}
+
 struct KeywordSuffix {
     properties: Vec<FilterProp>,
     disjunctive: bool,
@@ -7737,7 +7747,7 @@ fn parse_keyword_suffix(text: &str) -> Option<(KeywordSuffix, usize)> {
                 // A separator followed by a type word rather than a keyword
                 // belongs to the enclosing type list ("creature with disturb,
                 // or enchantment") and stays unconsumed for the caller.
-                if parse_leading_keyword_match(rest).is_none() && starts_with_type_word(rest) {
+                if separator_continues_enclosing_list(rest) {
                     break;
                 }
                 if matches!(*sep, ", or " | " or ") {
@@ -7796,6 +7806,9 @@ pub(crate) fn parse_without_keyword_suffix(text: &str) -> Option<(Vec<FilterProp
         let mut found_sep = false;
         for sep in &[", and ", ", or ", " and ", " or ", ", "] {
             if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>(*sep).parse(remaining) {
+                if separator_continues_enclosing_list(rest) {
+                    break;
+                }
                 consumed += sep.len();
                 remaining = rest;
                 found_sep = true;

@@ -6596,7 +6596,7 @@ fn chosen_number_extremum_of(amount: &QuantityExpr) -> Option<AggregateFunction>
     }
 }
 
-/// CR 120.3 + CR 608.2f: fold trailing "and each <object type>" legs of a
+/// CR 120.1 + CR 608.2f: fold trailing "and each <object type>" legs of a
 /// damage recipient list into one union filter — "each creature and each
 /// planeswalker" names ONE set of damaged permanents, not a creature set with an
 /// ignored tail. A leg that is a player scope ("and each player") is left in the
@@ -6621,11 +6621,13 @@ fn fold_each_object_legs<'a>(
         if parse_damage_each_player_scope(&after_and.to_lowercase()).is_some() {
             break;
         }
-        let (leg, rest) = parse_target_with_ctx(after_and, ctx);
+        let mut leg_ctx = ctx.clone();
+        let (leg, rest) = parse_target_with_ctx(after_and, &mut leg_ctx);
         let names_type = matches!(&leg, TargetFilter::Typed(tf) if !tf.type_filters.is_empty());
         if !names_type {
             break;
         }
+        *ctx = leg_ctx;
         legs.push(leg);
         remainder = rest;
     }
