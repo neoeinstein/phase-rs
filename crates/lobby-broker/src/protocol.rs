@@ -60,6 +60,10 @@ pub struct TournamentRequestId(pub u64);
 /// rather than a parse error, and the handshake is the only place that pairing
 /// can be refused. See 24.
 ///
+/// 91 — `PendingManaAbility::chosen_counter_count: Option<u32>` is retyped to
+///      `chosen_counter_counts: Vec<u32>` (#9207), preserving each announced
+///      amount for a composite `RemoveCounter` cost. The field is required,
+///      so v90 state cannot deserialize as v91 state. P2P moves to wire 73.
 /// 90 — `FormatConfig` gained `allow_experimental_dungeons`, the per-session
 ///      capability flag behind the experimental dungeon pool (Baldur's Gate
 ///      Wilderness joins the normal venture options and the initiative choice
@@ -747,7 +751,7 @@ pub struct TournamentRequestId(pub u64);
 ///      payload; mulligan bottoming folded into a
 ///      `MulliganDecisionPhase::BottomCards` sub-phase on
 ///      `WaitingFor::MulliganDecision`.
-pub const PROTOCOL_VERSION: u32 = 90;
+pub const PROTOCOL_VERSION: u32 = 91;
 
 /// Minimum protocol version accepted by lobby-only brokers at the hello
 /// handshake **from clients that predate [`LOBBY_PROTOCOL_VERSION`]** — the
@@ -774,6 +778,16 @@ pub const MIN_SUPPORTED_PROTOCOL: u32 = PROTOCOL_VERSION.saturating_sub(1);
 /// broker's window went disjoint from the shipped client's. This constant is
 /// the fix — it moves only for reasons the lobby can actually observe.
 ///
+/// 14 — `PairingView.report_gate` (broker → client, on `TournamentUpdate` and
+///      the `GetTournament` reply) gains a `ReportGate::Hosted` arm — the "a
+///      field's type changed" trigger, a serialized enum's value space growing.
+///      No broker emits `Hosted` yet: it is set only once server-authoritative
+///      hosting is wired (a later PR, which gates that behind its own
+///      `MIN_LOBBY_PROTOCOL_FOR_HOSTED_MATCH` client floor), so
+///      [`MIN_SUPPORTED_LOBBY_PROTOCOL`] does not move — a pre-14 reader never
+///      receives the new arm today, and the browser mirror
+///      (`client/src/adapter/types.ts` `ReportGate`) adds it in lockstep so the
+///      wire union stays 1:1.
 /// 13 — `FormatConfig` gained `allow_experimental_dungeons` (see
 ///      `PROTOCOL_VERSION` 90 for the full entry). Same three carriers as 2:
 ///      `CreateGameWithSettings` on [`LobbyClientMessage`] (client → broker),
@@ -1028,7 +1042,7 @@ pub const MIN_SUPPORTED_PROTOCOL: u32 = PROTOCOL_VERSION.saturating_sub(1);
 ///     that direction can reject — into one legible handshake refusal.
 /// 1 — Initial lobby-owned version, covering the `LobbyClientMessage` /
 ///     `LobbyServerMessage` variant sets, unchanged since #1880.
-pub const LOBBY_PROTOCOL_VERSION: u32 = 13;
+pub const LOBBY_PROTOCOL_VERSION: u32 = 14;
 
 /// Lowest [`LOBBY_PROTOCOL_VERSION`] a broker accepts from a client.
 ///
@@ -1939,7 +1953,7 @@ mod tests {
     /// rather than silently re-coupling the lobby to full-game churn.
     #[test]
     fn lobby_protocol_version_is_independent_of_the_full_game_one() {
-        assert_eq!(LOBBY_PROTOCOL_VERSION, 13);
+        assert_eq!(LOBBY_PROTOCOL_VERSION, 14);
         // Deliberately still 2, not 12: every lobby version past 2 keeps this
         // floor's guarantee — that a version-2 client can still parse every
         // frame it already understands. Individually: 3 is additive in both
@@ -1956,8 +1970,9 @@ mod tests {
         // a pre-10 consumer; 11 adds no field or variant; 12 adds an optional
         // broker → client field that a consumer which does not name it
         // ignores; 13 adds an optional, defaulted `FormatConfig` field on
-        // the same three carriers as 2, ignored the same way. See the
-        // constant's own changelog.
+        // the same three carriers as 2, ignored the same way; 14 adds a hosted
+        // report gate that has no production emitter yet. See the constant's
+        // own changelog.
         assert_eq!(MIN_SUPPORTED_LOBBY_PROTOCOL, 2);
         assert_ne!(
             LOBBY_PROTOCOL_VERSION, PROTOCOL_VERSION,
@@ -1977,12 +1992,12 @@ mod tests {
 
     #[test]
     fn protocol_version_tracks_full_game_wire_additions() {
-        assert_eq!(PROTOCOL_VERSION, 90);
+        assert_eq!(PROTOCOL_VERSION, 91);
         // Lobby keeps its one-version rollout window; full-game servers stay
         // current-only (`server_core::MIN_SUPPORTED_PROTOCOL == PROTOCOL_VERSION`),
         // which refuses an older full-game peer that cannot preserve the exact
         // Full-session identity across draft match attachment and follow-ups.
-        assert_eq!(MIN_SUPPORTED_PROTOCOL, 89);
+        assert_eq!(MIN_SUPPORTED_PROTOCOL, 90);
     }
 
     #[test]
@@ -2106,6 +2121,7 @@ mod tests {
                         .collect(),
                 })),
             }],
+            hosted: Default::default(),
             created_at: 1_000,
             last_activity_at: 2_000,
         }
@@ -2143,9 +2159,9 @@ mod tests {
     /// step: no field, no variant, moved ahead of new `GameFormat` variants;
     /// see that constant's own `/// 11` entry. Version 12 extends the chain by
     /// the same rule, as does version 13 (`FormatConfig` gains the optional
-    /// `allow_experimental_dungeons` flag).
+    /// `allow_experimental_dungeons` flag) and version 14 (`Hosted` report gate).
     #[test]
-    fn the_tournament_chain_spans_lobby_versions_four_through_thirteen() {
+    fn the_tournament_chain_spans_lobby_versions_four_through_fourteen() {
         const PRE_TOURNAMENT_LOBBY_VERSION: u32 = 3;
         const TOURNAMENT_SET_LOBBY_VERSION: u32 = PRE_TOURNAMENT_LOBBY_VERSION + 1;
         const CORRELATED_SETTLEMENT_LOBBY_VERSION: u32 = TOURNAMENT_SET_LOBBY_VERSION + 1;
@@ -2164,7 +2180,10 @@ mod tests {
         // Adds an optional field (`allow_experimental_dungeons`) to `FormatConfig`.
         const EXPERIMENTAL_DUNGEONS_LOBBY_VERSION: u32 =
             JOIN_TARGET_DRAFT_METADATA_LOBBY_VERSION + 1;
-        assert_eq!(LOBBY_PROTOCOL_VERSION, EXPERIMENTAL_DUNGEONS_LOBBY_VERSION);
+        // Adds a `Hosted` arm to `PairingView.report_gate` (a serialized enum's
+        // value space grows) — the "a field's type changed" trigger.
+        const HOSTED_MATCH_LOBBY_VERSION: u32 = EXPERIMENTAL_DUNGEONS_LOBBY_VERSION + 1;
+        assert_eq!(LOBBY_PROTOCOL_VERSION, HOSTED_MATCH_LOBBY_VERSION);
     }
 
     /// The guard for [`is_known_lobby_tag`], which is a string `matches!` and
