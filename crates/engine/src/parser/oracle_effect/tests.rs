@@ -75137,6 +75137,30 @@ fn multi_slot_list_unbindable_back_reference_is_an_honest_gap() {
     );
 }
 
+/// CR 115.1: a "choose target A and target B" declaration list is consumed whole
+/// by its following instruction, so that instruction's "its" is not a per-link
+/// back-reference and must not fail closed.
+#[test]
+fn choose_target_declaration_list_keeps_its_consuming_instruction() {
+    let def = parse_effect_chain(
+        "Choose up to one target creature you control and up to one target creature an opponent controls. Each of those creatures deals damage equal to its toughness to the other.",
+        AbilityKind::Spell,
+    );
+    let effects = collect_chain_effects(&def);
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::EachSourceDealsDamage { .. })),
+        "the consuming instruction must lower: {effects:?}"
+    );
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::Unimplemented { .. })),
+        "a declaration list must not fail its consumer closed"
+    );
+}
+
 /// CR 601.2c: a slot whose clause lowers to the untyped `Any` filter is not
 /// copied into the chain; the whole list declines to the single-clause path.
 #[test]

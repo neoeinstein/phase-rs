@@ -224,7 +224,10 @@ pub(super) fn try_split_multi_target_list(
 /// the representation both this splitter and `try_split_targeted_compound`
 /// produce. Evaluated on the clause as parsed, before later sentences chain on.
 /// The head's cardinality lives on the chunk (`head_multi_target`) or, before
-/// it is lifted there, on the clause itself.
+/// it is lifted there, on the clause itself. A "choose target A and target B"
+/// declaration list (`Effect::TargetOnly` slots) is excluded: its following
+/// instruction consumes every declared target at once ("Each of those creatures
+/// deals damage … to the other"), so no per-link `ParentTarget` binding arises.
 pub(super) fn is_multi_slot_list(
     head_multi_target: Option<&MultiTargetSpec>,
     clause: &ParsedEffectClause,
@@ -232,7 +235,8 @@ pub(super) fn is_multi_slot_list(
     fn every_link_is_a_slot(link: &AbilityDefinition) -> bool {
         link.multi_target.is_some() && link.sub_ability.as_deref().is_none_or(every_link_is_a_slot)
     }
-    (head_multi_target.is_some() || clause.multi_target.is_some())
+    !matches!(clause.effect, Effect::TargetOnly { .. })
+        && (head_multi_target.is_some() || clause.multi_target.is_some())
         && clause
             .sub_ability
             .as_deref()
