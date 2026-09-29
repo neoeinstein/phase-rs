@@ -27286,6 +27286,13 @@ fn from_among_batch_bounds(rest: &str) -> Option<ResolutionCastWindow> {
 /// and any later coverage audit all name the same gap.
 const UNREPRESENTABLE_CAST_CAP_GAP: &str = "unrepresentable_cast_cap";
 
+/// CR 115.1 + CR 601.2c: The parser gap name for a cast clause that names a
+/// declared target ("cast up to one target instant card and up to one target
+/// sorcery card ...") whose typed per-slot filters no cast shape here can
+/// carry. Lowering it to the bare `TargetFilter::Any` fallback would grant a
+/// free cast of ANY card, so the clause is refused instead.
+const CAST_TARGET_UNTYPED_GAP: &str = "cast_target_untyped";
+
 /// CR 608.2c + CR 608.2g: The single construction seam for every `from among`
 /// batch-cast arm.
 ///
@@ -29051,6 +29058,19 @@ fn try_parse_cast_effect(lower: &str, ctx: &ParseContext) -> Option<Effect> {
         };
         crate::parser::oracle_ir::ast::refuse_additional_cost_on_lingering_cast(&mut effect);
         return Some(effect);
+    }
+
+    // CR 115.1 + CR 601.2c: a cast clause that names declared targets ("up to one
+    // target instant card ...") but reached this untyped fallback has lost its
+    // per-slot type filters; fail closed rather than grant a cast of any card.
+    if preceded(
+        opt(tag::<_, _, OracleError<'_>>("up to one ")),
+        tag("target "),
+    )
+    .parse(rest)
+    .is_ok()
+    {
+        return Some(Effect::unimplemented(CAST_TARGET_UNTYPED_GAP, rest));
     }
 
     // Branch 3: bare fallback.

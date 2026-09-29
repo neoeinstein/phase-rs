@@ -49669,8 +49669,10 @@ fn lowering_with_stated_duration(
 ///
 /// The `"up to N target …"` rows are the mandatory paired negatives: there the
 /// quantifier is CR 115.1d target cardinality, not a cast budget, and those
-/// clauses must keep lowering. Without them this guard would silently swallow
-/// Diluvian Primordial, Finale of Promise and Gale, Waterdeep Prodigy.
+/// clauses must not be refused as a cap. Without them this guard would silently
+/// swallow Diluvian Primordial (Finale of Promise and Gale, Waterdeep Prodigy
+/// fail closed for a different reason, pinned in
+/// `an_untyped_cast_target_fails_closed_and_a_typed_one_lowers`).
 #[test]
 fn a_printed_cap_reaching_the_tail_branches_is_refused() {
     for (name, text, fragment) in [
@@ -49712,14 +49714,31 @@ fn a_printed_cap_reaching_the_tail_branches_is_refused() {
         );
     }
 
-    // MANDATORY PAIRED NEGATIVES. CR 115.1d: "up to one TARGET …" is target
-    // cardinality, carried by `MultiTargetSpec`, not a cast budget. These cards
-    // cast one card per chosen target and must keep lowering to a real
-    // `CastFromZone`.
+    // MANDATORY PAIRED NEGATIVE. CR 115.1d: "up to one TARGET …" is target
+    // cardinality, carried by `MultiTargetSpec`, not a cast budget. Diluvian
+    // Primordial casts one card per chosen target and must keep lowering to a
+    // real `CastFromZone`.
+    let effect = parse_effect(
+        "you may cast up to one target instant or sorcery card from that player's graveyard without paying its mana cost",
+    );
+    assert!(
+        matches!(&effect, Effect::CastFromZone { .. }),
+        "Diluvian Primordial: a CR 115.1d target quantifier is not a cast cap and \
+         must not be refused, got {effect:?}"
+    );
+}
+
+/// CR 115.1 + CR 601.2c: an "up to one target ..." cast whose typed per-slot
+/// filters no cast shape can carry reaches the bare `Any` fallback; it fails
+/// closed with the untyped-target gap instead of granting a cast of any card
+/// (Finale of Promise, Gale, Waterdeep Prodigy). A typed single-target cast
+/// still lowers to a real `CastFromZone`.
+#[test]
+fn an_untyped_cast_target_fails_closed_and_a_typed_one_lowers() {
     for (name, text) in [
         (
-            "Diluvian Primordial",
-            "you may cast up to one target instant or sorcery card from that player's graveyard without paying its mana cost",
+            "Finale of Promise",
+            "you may cast up to one target instant card and/or up to one target sorcery card from your graveyard",
         ),
         (
             "Gale, Waterdeep Prodigy",
@@ -49727,12 +49746,23 @@ fn a_printed_cap_reaching_the_tail_branches_is_refused() {
         ),
     ] {
         let effect = parse_effect(text);
-        assert!(
-            matches!(&effect, Effect::CastFromZone { .. }),
-            "{name}: a CR 115.1d target quantifier is not a cast cap and must not \
-             be refused, got {effect:?}"
-        );
+        let Effect::Unimplemented { name: gap, .. } = &effect else {
+            panic!("{name}: expected the untyped cast-target gap, got {effect:?}");
+        };
+        assert_eq!(gap, CAST_TARGET_UNTYPED_GAP, "{name}");
     }
+
+    let typed = parse_effect("you may cast target instant or sorcery card from your graveyard");
+    assert!(
+        matches!(
+            &typed,
+            Effect::CastFromZone {
+                target: TargetFilter::Typed(_) | TargetFilter::Or { .. },
+                ..
+            }
+        ),
+        "a typed cast target must stay a typed CastFromZone, got {typed:?}"
+    );
 }
 
 /// CR 608.2c: a REPRESENTABLE printed cap is refused just as strictly when the
@@ -75157,20 +75187,28 @@ fn choose_target_declaration_list_keeps_its_consuming_instruction() {
 }
 
 /// CR 601.2c: a slot whose clause lowers to the untyped `Any` filter is not
-/// copied into the chain; the whole list declines to the single-clause path.
+/// copied into the chain; the whole list declines to the single-clause path,
+/// which itself fails closed on the untyped cast target rather than fabricating
+/// any cast link.
 #[test]
 fn multi_slot_list_declines_when_a_slot_lowers_to_any() {
     let def = parse_effect_chain(
         "Cast up to one target instant card and/or up to one target sorcery card from your graveyard without paying their mana costs.",
         AbilityKind::Spell,
     );
-    assert_eq!(
-        collect_chain_effects(&def)
+    let effects = collect_chain_effects(&def);
+    assert!(
+        !effects
             .iter()
-            .filter(|e| matches!(e, Effect::CastFromZone { .. }))
-            .count(),
-        1,
-        "declined list must not fabricate a second cast link"
+            .any(|e| matches!(e, Effect::CastFromZone { .. })),
+        "declined list must not fabricate a cast link: {effects:?}"
+    );
+    assert!(
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::Unimplemented { name, .. } if name == CAST_TARGET_UNTYPED_GAP
+        )),
+        "the declined list must surface the untyped cast-target gap: {effects:?}"
     );
 }
 
