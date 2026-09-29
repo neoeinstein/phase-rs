@@ -13888,6 +13888,34 @@ fn trigger_vengevine_intervening_if_maps_to_nth_creature_spell_constraint() {
     );
     assert_eq!(def.trigger_zones, vec![Zone::Graveyard]);
     assert!(def.optional);
+    let exec = def.execute.as_deref().expect("trigger execute body");
+    assert!(
+        !matches!(&*exec.effect, Effect::Unimplemented { .. }),
+        "the ordinal guard is represented by the constraint, so the body must not fail closed"
+    );
+}
+
+/// CR 603.4: the ordinal exemption covers only a LEADING guard that itself is the
+/// Nth-spell phrase. A different unhoisted leading guard must still fail closed
+/// even when an ordinal phrase appears later in the same line.
+#[test]
+fn ordinal_constraint_does_not_exempt_a_different_unhoisted_leading_guard() {
+    let def = parse_trigger_line(
+        "Whenever you cast a spell, if the moon is made of cheese, if it's the second creature spell you cast this turn, you gain 1 life.",
+        "Test Card",
+    );
+    assert!(
+        matches!(
+            def.constraint,
+            Some(TriggerConstraint::NthSpellThisTurn { .. })
+        ),
+        "reach guard: the ordinal phrase is still recognized as a constraint"
+    );
+    let exec = def.execute.as_deref().expect("trigger execute body");
+    assert!(
+        matches!(&*exec.effect, Effect::Unimplemented { .. }),
+        "the unhoisted leading guard must not be masked by the ordinal constraint"
+    );
 }
 
 /// CR 601.2a + CR 603.4: Alania's disjunctive "first-of-type this turn"
@@ -34812,4 +34840,132 @@ fn had_counters_intervening_if_hoists_for_bare_and_one_or_more_phrasings() {
             "the effect body must survive for {text:?}"
         );
     }
+}
+
+/// CR 603.4 + CR 506.1: "if you didn't attack with a creature this turn" is a
+/// precise intervening-if and hoists as the negation of "attacked this turn".
+#[test]
+fn didnt_attack_with_a_creature_intervening_if_hoists_as_zero_attack_tally() {
+    for text in [
+        "At the beginning of your end step, if you didn't attack with a creature this turn, sacrifice this Aura.",
+        "At the beginning of your end step, if you did not attack this turn, you may draw a card.",
+    ] {
+        let def = parse_trigger_line(text, "Test Card");
+        assert_eq!(
+            def.condition,
+            Some(TriggerCondition::QuantityComparison {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::AttackedThisTurn {
+                        scope: CountScope::Controller,
+                        filter: None,
+                    },
+                },
+                comparator: Comparator::EQ,
+                rhs: QuantityExpr::Fixed { value: 0 },
+            }),
+            "the guard must hoist for {text:?}"
+        );
+        let exec = def.execute.as_deref().expect("trigger execute body");
+        assert!(
+            !matches!(&*exec.effect, Effect::Unimplemented { .. }),
+            "the effect body must survive the hoist for {text:?}"
+        );
+    }
+}
+
+/// CR 603.4 + CR 608.2c: a LEADING guard has no earlier instruction to refer to.
+/// When the effect parser lowers it to a prior-instruction back-reference
+/// ("if you didn't" -> not-performed, "if it's a creature" -> revealed card type)
+/// and the trigger grammar cannot hoist it, the trigger fails closed instead of
+/// keeping a condition that can never be evaluated meaningfully.
+#[test]
+fn unhoistable_leading_guard_lowered_to_a_back_reference_fails_closed() {
+    for text in [
+        "At the beginning of your end step, if you didn't play a card from exile this turn, create a tapped Powerstone token.",
+        "Whenever a permanent you control is turned face up, if it's a creature, put two +1/+1 counters on it.",
+    ] {
+        let def = parse_trigger_line(text, "Test Card");
+        assert_eq!(def.condition, None, "nothing was hoisted for {text:?}");
+        let exec = def.execute.as_deref().expect("trigger execute body");
+        assert!(
+            matches!(&*exec.effect, Effect::Unimplemented { .. }),
+            "the back-reference guard must fail the trigger closed for {text:?}"
+        );
+    }
+}
+
+/// Reach guard for the fail-closed back-reference rule: a NON-leading "if it's a
+/// [type] card" after a real reveal is a legitimate resolution-time gate and stays
+/// on the effect chain.
+#[test]
+fn reveal_then_type_gate_is_not_failed_closed() {
+    let def = parse_trigger_line(
+        "At the beginning of your upkeep, reveal the top card of your library. If it's a creature card, you gain 1 life.",
+        "Test Card",
+    );
+    let exec = def.execute.as_deref().expect("trigger execute body");
+    assert!(!matches!(&*exec.effect, Effect::Unimplemented { .. }));
+    let gated = exec.sub_ability.as_deref().expect("gated follow-up clause");
+    assert!(matches!(
+        gated.condition,
+        Some(AbilityCondition::RevealedHasCardType { .. })
+    ));
+}
+
+/// CR 603.4 + CR 700.2: a triggered modal's trailing intervening-if survives the
+/// header split. A guard the grammar can express hoists to the trigger condition;
+/// one it cannot fails the trigger closed instead of firing unconditionally.
+#[test]
+fn triggered_modal_trailing_intervening_if_hoists_or_fails_closed() {
+    let parse = |guard: &str| {
+        let text = format!(
+            "At the beginning of your end step, if {guard}, choose one —\n• You gain 2 life.\n• You draw a card."
+        );
+        let mut parsed = parse_oracle_text(&text, "Test Card", &[], &["Creature".to_string()], &[]);
+        assert_eq!(parsed.triggers.len(), 1);
+        parsed.triggers.remove(0)
+    };
+
+    let hoisted = parse("a creature died this turn");
+    assert!(
+        hoisted.condition.is_some(),
+        "reach guard: an expressible guard hoists {:?}",
+        hoisted
+    );
+    let exec = hoisted.execute.as_deref().expect("modal execute");
+    assert_eq!(exec.mode_abilities.len(), 2, "the modal payload survives");
+
+    let closed = parse("the moon is made of cheese");
+    assert_eq!(closed.condition, None);
+    let exec = closed.execute.as_deref().expect("gap execute");
+    assert!(
+        matches!(&*exec.effect, Effect::Unimplemented { .. }),
+        "an unhoistable modal guard must not fire unconditionally"
+    );
+}
+
+/// CR 118.12 + CR 608.2c: an "unless you pay" in a LATER sentence binds to its own
+/// clause, never to the whole trigger. Reach guard: the same clause in the first
+/// sentence is still hoisted.
+#[test]
+fn later_sentence_unless_pay_is_not_hoisted_onto_the_trigger() {
+    let first = parse_trigger_line(
+        "At the beginning of your upkeep, you lose 1 life unless you pay {1}.",
+        "Test Card",
+    );
+    assert!(
+        first.unless_pay.is_some(),
+        "reach guard: a first-sentence unless is hoisted"
+    );
+
+    let later = parse_trigger_line(
+        "At the beginning of your upkeep, draw a card. Then you lose 1 life unless you pay {1}.",
+        "Test Card",
+    );
+    assert_eq!(
+        later.unless_pay, None,
+        "the unless binds to its own sentence"
+    );
+    let exec = later.execute.as_deref().expect("trigger execute body");
+    assert!(matches!(&*exec.effect, Effect::Draw { .. }));
 }

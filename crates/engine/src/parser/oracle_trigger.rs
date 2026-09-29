@@ -1798,7 +1798,6 @@ pub(crate) fn parse_trigger_line_with_index_ir(
                         ir,
                         &effect_for_parse,
                         if_condition.as_ref(),
-                        constraint.as_ref(),
                         &effect_ctx,
                     ),
                 ))
@@ -3813,6 +3812,14 @@ fn hoist_unless_pay_modifier(
         enclosing = after;
     }
     let unless_sentence_start = unless_pos - enclosing.len();
+    // CR 118.12a + CR 608.2c: an "unless" binds to the sentence that contains it.
+    // Hoisting one from a later sentence would gate the whole trigger — including
+    // the earlier sentences' instructions — on the payment (Delaying Shield: paying
+    // {1}{W} would skip removing the delay counters). Decline; the per-clause path
+    // (`extract_resolution_unless_pay_modifier`) attaches the cost to its own clause.
+    if unless_sentence_start > 0 {
+        return (text.to_string(), None);
+    }
     if crate::parser::oracle_effect::lower::strip_temporal_prefix(
         text[unless_sentence_start..].trim_start(),
     )
@@ -6447,21 +6454,27 @@ fn fail_closed_on_dropped_intervening_if(
     ir: EffectChainIr,
     effect_text: &str,
     hoisted: Option<&TriggerCondition>,
-    constraint: Option<&TriggerConstraint>,
     ctx: &ParseContext,
 ) -> EffectChainIr {
     let effect_text = effect_text.trim_start();
+    let effect_lower = effect_text.to_lowercase();
     // CR 603.4: "if it's the Nth [type] spell you cast this turn" is represented by
-    // the fire-time ordinal constraint, not by a condition on the chain.
+    // the fire-time ordinal constraint, not by a condition on the chain. Only the
+    // LEADING guard itself is exempt; a different unhoisted guard stays a gap.
     let guard_is_ordinal_constraint =
-        matches!(constraint, Some(TriggerConstraint::NthSpellThisTurn { .. }));
+        parse_nth_spell_this_turn_intervening_if(&effect_lower).is_ok();
     let leading_guard_dropped = hoisted.is_none()
         && !guard_is_ordinal_constraint
-        && parse_if_keyword(&effect_text.to_lowercase()).is_ok()
+        && parse_if_keyword(&effect_lower).is_ok()
         && split_leading_conditional(effect_text).is_some()
         && ir.clauses.first().is_some_and(|clause| {
-            clause.condition.is_none()
-                && clause.parsed.condition.is_none()
+            // A leading guard has no antecedent in intervening-if position, so a
+            // condition that reads a prior instruction's outcome is not the guard.
+            !clause
+                .condition
+                .iter()
+                .chain(clause.parsed.condition.iter())
+                .any(|condition| !condition_reads_prior_instruction(condition))
                 && clause.parsed.unlowered_guard.is_none()
                 && !matches!(clause.parsed.effect, Effect::Unimplemented { .. })
         });
@@ -6476,6 +6489,47 @@ fn fail_closed_on_dropped_intervening_if(
         ctx.actor.clone(),
         ctx.in_trigger,
     )
+}
+
+/// CR 603.4: a triggered modal's header split leaves a trailing intervening-if
+/// on the trigger line ("Whenever X, if Y" before "choose one —"), and the modal
+/// payload later replaces the trigger body. When that guard did not hoist to the
+/// trigger condition (`intervening_if`) or the fire-time ordinal constraint,
+/// nothing represents it and the modal would fire unconditionally. Returns the
+/// clause-gap body that makes such a trigger fail closed; `None` when the guard
+/// was captured or there is no guard.
+pub(crate) fn unhoisted_modal_guard_body(trigger: &TriggerIr) -> Option<TriggerBody> {
+    let effect_lower = trigger.modifiers.effect_lower.trim_start();
+    let leading_guard_dropped = trigger.modifiers.intervening_if.is_none()
+        && parse_if_keyword(effect_lower).is_ok()
+        && parse_nth_spell_this_turn_intervening_if(effect_lower).is_err();
+    leading_guard_dropped.then(|| {
+        TriggerBody::EffectChain(EffectChainIr::single_clause(
+            effect_lower,
+            AbilityKind::Spell,
+            parsed_clause(clause_gap_unimplemented(effect_lower)),
+            None,
+            trigger.body_context.actor.clone(),
+            true,
+        ))
+    })
+}
+
+/// CR 608.2c: True when an ability condition reads the outcome of an earlier
+/// instruction in the same resolution ("if you don't", "if you do", "if it's a
+/// creature" after a reveal). A trigger's leading `if` has no earlier
+/// instruction, so such a condition can never be the captured intervening-if.
+fn condition_reads_prior_instruction(condition: &AbilityCondition) -> bool {
+    match condition {
+        AbilityCondition::EffectOutcome { .. }
+        | AbilityCondition::RevealedHasCardType { .. }
+        | AbilityCondition::ZoneChangedThisWay { .. } => true,
+        AbilityCondition::Not { condition } => condition_reads_prior_instruction(condition),
+        AbilityCondition::And { conditions } | AbilityCondition::Or { conditions } => {
+            conditions.iter().any(condition_reads_prior_instruction)
+        }
+        _ => false,
+    }
 }
 
 /// CR 608.2c: the connectors that open the ELSE branch of a written-order

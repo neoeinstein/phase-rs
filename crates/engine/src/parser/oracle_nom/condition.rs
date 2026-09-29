@@ -7179,6 +7179,26 @@ fn parse_combat_history_condition(input: &str) -> OracleResult<'_, StaticConditi
                 tag("you attacked this turn"),
             )),
         ),
+        // CR 508.1a + CR 603.4: the negated surface, "you didn't attack [with a
+        // creature] this turn" (Curious Obsession, See Red) — no attack declared
+        // by the controller this turn.
+        value(
+            make_quantity_comparison(
+                QuantityRef::AttackedThisTurn {
+                    scope: CountScope::Controller,
+                    filter: None,
+                },
+                Comparator::EQ,
+                0,
+            ),
+            (
+                tag("you "),
+                alt((tag("didn't "), tag("did not "))),
+                tag("attack"),
+                opt(alt((tag(" with a creature"), tag(" with any creatures")))),
+                tag(" this turn"),
+            ),
+        ),
         parse_you_attacked_with_quantity,
         // CR 508.6 + CR 109.5: "a player attacked you during their last turn" —
         // the existential revenge gate (Avenge's self-spell cost reduction). The
