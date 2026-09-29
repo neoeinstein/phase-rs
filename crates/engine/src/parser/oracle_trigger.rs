@@ -9425,7 +9425,7 @@ fn try_extract_had_counter_condition(
 }
 
 /// Parse the body that follows `"if it had "`: an optional `"no "` negation, an
-/// optional `"a <type> "` type discriminator, then `"counter(s)[ on it]"`.
+/// optional `"a <type> "` / `"one or more <type> "` type discriminator, then `"counter(s)[ on it]"`.
 /// Returns `(negated, counter_type)` where `counter_type` is `Some` only for the
 /// typed form. The type discriminator is whatever non-empty token precedes
 /// `" counter"`, with an optional leading article (`"a "` / `"an "`) consumed —
@@ -9439,7 +9439,9 @@ fn parse_had_counters_body(input: &str) -> OracleResult<'_, (bool, Option<Counte
     // is anchored on the literal " counter" so the type token cannot bleed past
     // it. The article is optional grammatical filler (present in the singular
     // "a +1/+1 counter", absent in the plural "no +1/+1 counters").
-    let (after_article, _) = opt(alt((tag("a "), tag("an ")))).parse(input)?;
+    // "one or more" is the plural quantity form of the same "at least one" test
+    // ("if it had one or more -1/-1 counters on it"), so it shares the article slot.
+    let (after_article, _) = opt(alt((tag("a "), tag("an "), tag("one or more ")))).parse(input)?;
     if let Ok((rest, type_text)) =
         take_until::<_, _, OracleError<'_>>(" counter").parse(after_article)
     {
@@ -9452,8 +9454,8 @@ fn parse_had_counters_body(input: &str) -> OracleResult<'_, (bool, Option<Counte
         }
     }
 
-    // Any-counter form: "counter(s) [on it]".
-    let (rest, _) = parse_counter_word_tail(input)?;
+    // Any-counter form: "[one or more ]counter(s) [on it]".
+    let (rest, _) = parse_counter_word_tail(after_article)?;
     Ok((rest, (negated, None)))
 }
 

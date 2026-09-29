@@ -34784,3 +34784,32 @@ fn expressible_intervening_ifs_hoist_to_the_trigger_condition() {
         );
     }
 }
+
+/// CR 400.7 + CR 603.4 + CR 603.10: the past-state "if it had ... counters on
+/// it" guard is hoisted for both the bare and the "one or more <type>" phrasings
+/// instead of failing the trigger closed.
+#[test]
+fn had_counters_intervening_if_hoists_for_bare_and_one_or_more_phrasings() {
+    for (text, counter_type) in [
+        (
+            "Whenever a creature you control leaves the battlefield, if it had counters on it, put those counters on ~.",
+            None,
+        ),
+        (
+            "Whenever a creature you control dies, if it had one or more -1/-1 counters on it, you may put that many -1/-1 counters on target creature.",
+            Some(CounterType::Minus1Minus1),
+        ),
+    ] {
+        let def = parse_trigger_line(text, "Test Card");
+        assert_eq!(
+            def.condition,
+            Some(TriggerCondition::HadCounters { counter_type }),
+            "the guard must be hoisted for {text:?}"
+        );
+        let exec = def.execute.as_deref().expect("trigger execute body");
+        assert!(
+            !matches!(&*exec.effect, Effect::Unimplemented { .. }),
+            "the effect body must survive for {text:?}"
+        );
+    }
+}
