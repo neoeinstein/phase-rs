@@ -39,10 +39,11 @@ use engine::types::game_state::WaitingFor;
 use engine::types::identifiers::ObjectId;
 use engine::types::phase::Phase;
 
+// The "topmost creature card in your library perpetually gets +X/+X" clause is not modelled
+// (an honest perpetual gap); it is irrelevant to the X relay under test, so it is omitted.
 const THORNA_ORACLE: &str = "Thorna and Twigtooth enters with two -1/-1 counters on it.\n\
 Whenever Thorna and Twigtooth attacks, remove all counters from target creature you control. \
-Each opponent loses X life, you gain X life, and the topmost creature card in your library \
-perpetually gets +X/+X, where X is the number of counters removed this way.";
+Each opponent loses X life and you gain X life, where X is the number of counters removed this way.";
 
 const PLATINUM_EMPERION_ORACLE: &str = "Your life total can't change.";
 
