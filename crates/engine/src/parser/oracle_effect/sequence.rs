@@ -2,8 +2,8 @@ use crate::parser::oracle_nom::error::{OracleError, OracleResult};
 use nom::branch::alt;
 use nom::bytes::complete::{tag, tag_no_case, take_till, take_until};
 use nom::character::complete::multispace1;
-use nom::combinator::{all_consuming, eof, map, map_opt, opt, rest, value};
-use nom::sequence::{preceded, terminated};
+use nom::combinator::{all_consuming, eof, map, map_opt, opt, recognize, rest, value};
+use nom::sequence::{pair, preceded, terminated};
 use nom::Parser;
 
 use super::super::oracle_nom::bridge::nom_on_lower;
@@ -3641,7 +3641,7 @@ fn exile_conjunct_prepend(before_lower: &str, remainder_trimmed: &str) -> Option
     Some("exile ".to_string())
 }
 
-/// CR 106.3 + CR 120.2b + CR 601.2h: "<source> deals A damage to X if {C1} was
+/// CR 120.2b + CR 601.2h: "<source> deals A damage to X if {C1} was
 /// spent to cast this spell and B damage to Y if {C2} was spent to cast this
 /// spell" — the second conjunct is a bare "<amount> damage …" tail that elides the
 /// "<source> deals" head and carries its own mana-spent condition. Returns the
@@ -11010,6 +11010,22 @@ mod tests {
             let chunks = clause_texts(&format!("{left}, {right}"));
             assert_eq!(chunks, vec![left.to_string(), right.to_string()]);
         }
+    }
+
+    // CR 120.2b + CR 601.2h: a no-comma " and " between two mana-gated damage
+    // conjuncts restores the elided "<source> deals" head on the second half.
+    #[test]
+    fn mana_spent_damage_conjunct_restores_elided_head() {
+        let chunks = clause_texts(
+            "~ deals 3 damage to each creature without flying if {R} was spent to cast this spell and 2 damage to each creature with flying if {G} was spent to cast this spell",
+        );
+        assert_eq!(
+            chunks,
+            vec![
+                "~ deals 3 damage to each creature without flying if {R} was spent to cast this spell",
+                "~ deals 2 damage to each creature with flying if {G} was spent to cast this spell",
+            ]
+        );
     }
 
     #[test]
