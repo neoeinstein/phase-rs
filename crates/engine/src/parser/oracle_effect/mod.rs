@@ -14014,6 +14014,74 @@ fn parse_reveal_until_active_filter_text(input: &str) -> OracleResult<'_, &str> 
     .parse(input)
 }
 
+/// CR 701.20a: The comma-joined kept-card clause inside an active-voice
+/// reveal-until clause, split off the until-filter.
+#[derive(Clone, Copy)]
+struct RevealUntilInlineKept<'a> {
+    /// The until-filter text preceding the kept clause.
+    head: &'a str,
+    destination: Zone,
+    enter_tapped: crate::types::zones::EtbTapState,
+    /// A trailing subject-elided ", then shuffles".
+    then_shuffle: bool,
+}
+
+/// CR 701.20a + CR 608.2c: Split ", puts that card onto the battlefield [tapped]"
+/// / ", puts it into their hand" off the until-filter text, plus an optional
+/// trailing ", then shuffles" (`after_filter` is what the filter parse left).
+/// Returns `None` unless the whole tail is recognised, so an unrecognised tail
+/// keeps its prior treatment instead of being half-consumed.
+fn split_reveal_until_inline_kept<'a>(
+    filter_text: &'a str,
+    after_filter: &str,
+) -> Option<RevealUntilInlineKept<'a>> {
+    type E<'a> = OracleError<'a>;
+    let (kept_clause, head) = alt((take_until::<_, _, E>(", puts "), take_until(", put ")))
+        .parse(filter_text)
+        .ok()?;
+    let (_, (destination, enter_tapped)) = all_consuming(preceded(
+        (
+            tag::<_, _, E>(", "),
+            alt((tag("puts "), tag("put "))),
+            alt((tag("that card"), tag("it"))),
+        ),
+        alt((
+            map(
+                preceded(tag(" onto the battlefield"), opt(tag(" tapped"))),
+                |tapped| {
+                    (
+                        Zone::Battlefield,
+                        crate::types::zones::EtbTapState::from_legacy_bool(tapped.is_some()),
+                    )
+                },
+            ),
+            value(
+                (Zone::Hand, crate::types::zones::EtbTapState::Unspecified),
+                alt((tag(" into your hand"), tag(" into their hand"))),
+            ),
+        )),
+    ))
+    .parse(kept_clause)
+    .ok()?;
+    let then_shuffle = if after_filter.trim().is_empty() {
+        false
+    } else {
+        all_consuming(preceded(
+            multispace0,
+            terminated(tag::<_, _, E>("shuffles"), opt(tag("."))),
+        ))
+        .parse(after_filter)
+        .ok()?;
+        true
+    };
+    Some(RevealUntilInlineKept {
+        head,
+        destination,
+        enter_tapped,
+        then_shuffle,
+    })
+}
+
 fn parse_reveal_until_passive_filter_text(input: &str) -> OracleResult<'_, &str> {
     all_consuming(alt((terminated(take_until(" card"), tag(" card")), rest))).parse(input)
 }
@@ -14280,12 +14348,24 @@ fn try_parse_reveal_until(tp: TextPair, player: TargetFilter) -> Option<ParsedEf
     if let Some((_, rest_orig)) = active_result {
         let rest_lower = &count_tp.lower[count_tp.lower.len() - rest_orig.len()..];
         let (after_count_lower, raw_count) = parse_reveal_until_count(rest_lower).ok()?;
-        let (_, filter_text) = parse_reveal_until_active_filter_text(after_count_lower).ok()?;
-        let filter = build_reveal_until_filter(filter_text);
+        let (after_filter, filter_text) =
+            parse_reveal_until_active_filter_text(after_count_lower).ok()?;
+        // CR 701.20a + CR 608.2c: a comma-joined kept-card clause ("…until they
+        // reveal a card that shares a card type with it, puts that card onto the
+        // battlefield, then shuffles") stays inside this clause when a prefix
+        // clause ("For each permanent exiled this way, …") latches the comma
+        // split, so it is consumed here rather than dropped.
+        let inline_kept = split_reveal_until_inline_kept(filter_text, after_filter);
+        let filter =
+            build_reveal_until_filter(inline_kept.as_ref().map_or(filter_text, |k| k.head));
         // CR 107.3c: fail honestly instead of fabricating a raw-text placeholder.
         let count = apply_where_x_quantity_expression(raw_count, where_x_expression.as_deref())?;
-        return Some(parsed_clause(Effect::RevealUntil {
-            player,
+        let (kept_destination, enter_tapped) = inline_kept.as_ref().map_or(
+            (Zone::Hand, crate::types::zones::EtbTapState::Unspecified),
+            |k| (k.destination, k.enter_tapped),
+        );
+        let mut clause = parsed_clause(Effect::RevealUntil {
+            player: player.clone(),
             filter,
             count,
             // The matched-set disposition is refined by a following "Put any
@@ -14293,15 +14373,24 @@ fn try_parse_reveal_until(tp: TextPair, player: TargetFilter) -> Option<ParsedEf
             // (`ContinuationAst::RevealUntilKept` with `any_number`); the default
             // `KeepEach` covers the single-hit forms.
             matched_disposition: RevealUntilDisposition::KeepEach,
-            kept_destination: Zone::Hand,
+            kept_destination,
             rest_destination: Zone::Library,
             rest_order: DigRestOrder::Random,
-            enter_tapped: crate::types::zones::EtbTapState::Unspecified,
+            enter_tapped,
             enters_attacking: false,
             kept_optional_to: None,
             enters_under: None,
             kept_destination_if: None,
-        }));
+        });
+        // CR 701.24a + CR 608.2c: the subject-elided "then shuffles" shuffles the
+        // library of the player who revealed (the clause's subject).
+        if inline_kept.is_some_and(|k| k.then_shuffle) {
+            clause.sub_ability = Some(Box::new(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Shuffle { target: player },
+            )));
+        }
+        return Some(clause);
     }
 
     // CR 701.20a: Passive-voice form — "…until a/an <filter> [card] is revealed

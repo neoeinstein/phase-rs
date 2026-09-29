@@ -661,6 +661,63 @@ fn source_enchanted_player_for_context(
     }
 }
 
+/// CR 608.2c + CR 400.7: Members of the most recent tracked set that satisfy
+/// `filter` and, when `caused_by` is bound, were produced by that action. The
+/// single authority for [`QuantityRef::FilteredTrackedSetSize`]: its count is
+/// this vector's length and the per-member `repeat_for` loop binds these same
+/// objects, so count and members cannot diverge.
+///
+/// CR 700.2 + CR 608.2c: "highest id" == "the set the currently-resolving
+/// instruction published" — the ordering argument is written once, on
+/// `effects::publish_tracked_set`. Deliberately not routed through
+/// `targeting::resolve_tracked_set_id`: that authority SKIPS empty sets, and
+/// under mode scoping not skipping is the correct semantics here.
+pub(crate) fn filtered_tracked_set_members(
+    state: &GameState,
+    filter: &TargetFilter,
+    caused_by: Option<ThisWayCause>,
+    filter_ctx: &FilterContext<'_>,
+) -> Vec<ObjectId> {
+    let Some((set_id, ids)) = state.tracked_object_sets.iter().max_by_key(|(id, _)| id.0) else {
+        return Vec::new();
+    };
+    ids.iter()
+        .copied()
+        .filter(|&oid| {
+            // CR 608.2c + CR 614.6: an action-bound count ("the number of
+            // creatures sacrificed this way") tallies only members whose
+            // recorded producer action equals the bound cause — independent of
+            // final zone; `None` admits every filtered member.
+            let cause_ok = caused_by.is_none_or(|cause| {
+                state
+                    .tracked_set_member_causes
+                    .get(set_id)
+                    .and_then(|causes| causes.get(&oid))
+                    .is_some_and(|member_cause| *member_cause == cause)
+            });
+            cause_ok
+                && if state.battlefield.contains(&oid) {
+                    crate::game::filter::matches_target_filter(state, oid, filter, filter_ctx)
+                } else {
+                    // CR 608.2h: Use last-known information to filter a tracked
+                    // object that has left the battlefield.
+                    state.lki_cache.get(&oid).map_or_else(
+                        || {
+                            crate::game::filter::matches_target_filter(
+                                state, oid, filter, filter_ctx,
+                            )
+                        },
+                        |lki| {
+                            crate::game::filter::matches_target_filter_on_lki_snapshot(
+                                state, oid, lki, filter, filter_ctx,
+                            )
+                        },
+                    )
+                }
+        })
+        .collect()
+}
+
 /// Resolve a QuantityExpr to a concrete integer value.
 ///
 /// `controller` is the player who controls the ability (used for relative filters).
@@ -5385,56 +5442,9 @@ fn resolve_ref(
         // `effects::publish_tracked_set`. Deliberately not routed through
         // `targeting::resolve_tracked_set_id`: that authority SKIPS empty sets, and
         // under mode scoping not skipping is the correct semantics here.
-        QuantityRef::FilteredTrackedSetSize { filter, caused_by } => {
-            let Some((set_id, ids)) = state.tracked_object_sets.iter().max_by_key(|(id, _)| id.0)
-            else {
-                return 0;
-            };
-            let count = ids
-                .iter()
-                .filter(|&&oid| {
-                    // CR 608.2c + CR 614.6: an action-bound count ("the number of
-                    // creatures sacrificed this way") tallies only members whose
-                    // recorded producer action equals the bound cause —
-                    // independent of final zone; `None` counts every filtered
-                    // member (legacy parity).
-                    let cause_ok = match caused_by {
-                        None => true,
-                        Some(cause) => state
-                            .tracked_set_member_causes
-                            .get(set_id)
-                            .and_then(|causes| causes.get(&oid))
-                            .is_some_and(|member_cause| member_cause == cause),
-                    };
-                    let matches_filter = if !state.battlefield.contains(&oid) {
-                        // CR 608.2h: Use last-known information to filter a tracked object that has left the battlefield.
-                        state.lki_cache.get(&oid).map_or_else(
-                            || {
-                                crate::game::filter::matches_target_filter(
-                                    state,
-                                    oid,
-                                    filter,
-                                    &filter_ctx,
-                                )
-                            },
-                            |lki| {
-                                crate::game::filter::matches_target_filter_on_lki_snapshot(
-                                    state,
-                                    oid,
-                                    lki,
-                                    filter,
-                                    &filter_ctx,
-                                )
-                            },
-                        )
-                    } else {
-                        crate::game::filter::matches_target_filter(state, oid, filter, &filter_ctx)
-                    };
-                    cause_ok && matches_filter
-                })
-                .count();
-            usize_to_i32_saturating(count)
-        }
+        QuantityRef::FilteredTrackedSetSize { filter, caused_by } => usize_to_i32_saturating(
+            filtered_tracked_set_members(state, filter, *caused_by, &filter_ctx).len(),
+        ),
         // CR 400.7 + CR 608.2c: Read the per-resolution counter populated by
         // ChangeZoneAll when it exiles cards from a hand. Used by "draws a card
         // for each card exiled from their hand this way" (Deadly Cover-Up).
