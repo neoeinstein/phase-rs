@@ -625,6 +625,38 @@ fn parses_teferi_cast_only_at_sorcery_speed_regression() {
     }
 }
 
+/// CR 603.2d + CR 604.1: "triggers while <condition>, that ability triggers an
+/// additional time" attaches the parsed condition to the doubler; the same text
+/// without the "while" clause stays unconditional.
+#[test]
+fn double_triggers_while_condition_is_attached() {
+    for text in [
+        "If a triggered ability of another Shrine you control triggers while you control six or more Shrines, that ability triggers an additional time.",
+        "If a triggered ability of a creature you control triggers while you control three or more creatures, that ability triggers an additional time.",
+    ] {
+        let def = parse_static_line(text).expect("expected DoubleTriggers static");
+        assert!(matches!(def.mode, StaticMode::DoubleTriggers { .. }));
+        assert!(
+            matches!(
+                def.condition,
+                Some(StaticCondition::QuantityComparison { .. })
+            ),
+            "condition must be a typed quantity gate for {text:?}, got {:?}",
+            def.condition
+        );
+    }
+    let unconditional = parse_static_line(
+        "If a triggered ability of a creature you control triggers, that ability triggers an additional time.",
+    )
+    .expect("expected DoubleTriggers static");
+    assert_eq!(unconditional.condition, None);
+    // An unparseable gate declines instead of doubling unconditionally.
+    assert!(parse_static_line(
+        "If a triggered ability of a creature you control triggers while the moon is full, that ability triggers an additional time.",
+    )
+    .is_none());
+}
+
 /// CR 603.2d: Damage-caused trigger doubler (Wayta, Trainer Prodigy).
 #[test]
 fn parses_wayta_damage_caused_doubler() {

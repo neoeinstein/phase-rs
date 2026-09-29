@@ -3874,6 +3874,25 @@ pub(crate) fn parse_static_line_inner(
         if let Some(filter) = parse_doubler_source_filter(tp.lower) {
             def = def.affected(filter);
         }
+        // CR 603.2d + CR 604.1: "…triggers while <condition>, that ability triggers
+        // an additional time" (Sanctum of All: "while you control six or more
+        // Shrines") gates the doubling on a game-state condition, evaluated live
+        // by `active_static_definitions`. `parse_static_condition` delegates to
+        // `parse_inner_condition`, the single condition authority.
+        if let Some((_, condition_text, _)) = nom_primitives::scan_preceded(tp.lower, |i| {
+            preceded(
+                tag::<_, _, OracleError<'_>>("triggers while "),
+                terminated(take_until(", "), tag(", ")),
+            )
+            .parse(i)
+        }) {
+            // An unparseable gate must not degrade to an unconditional doubler:
+            // decline so the line stays a flagged gap.
+            def.condition = parse_static_condition(condition_text);
+            if def.condition.is_none() {
+                return None;
+            }
+        }
         return Some(def);
     }
 
