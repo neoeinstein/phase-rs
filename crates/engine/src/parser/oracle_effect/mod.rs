@@ -18376,8 +18376,8 @@ fn lower_clause_ast(ast: ClauseAst, ctx: &mut ParseContext) -> ParsedEffectClaus
                             &clause_text,
                         ));
                     }
-                    // A STATE guard with no owner family falls through to the behaviour this
-                    // parser has always had — the guard is dropped, the body is emitted, and
+                    // Outside a trigger, a STATE guard with no owner family falls through to the
+                    // behaviour this parser has always had — the guard is dropped, the body is emitted, and
                     // the loss is reported by `swallow_check`'s Condition_If detector, the
                     // channel six in-tree tests assert by name. A gap here would suppress
                     // that detector for the whole unit (`swallow_check.rs`'s

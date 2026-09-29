@@ -9,7 +9,8 @@ use nom::multi::{many0, many1, separated_list1};
 use nom::sequence::{delimited, pair, preceded, terminated};
 use nom::Parser;
 
-use super::oracle_effect::conditions::source_saddled_filter;
+use super::oracle_effect::conditions::{source_saddled_filter, split_leading_conditional};
+use super::oracle_effect::gap_diagnosis::clause_gap_unimplemented;
 use super::oracle_effect::{
     attach_terminal_die_result_branches_before_finalization, condition_text_is_rehomeable,
     lower_effect_chain_ir, parse_effect_chain_ir, parse_player_relative_clause,
@@ -1647,6 +1648,9 @@ pub(crate) fn parse_trigger_line_with_index_ir(
     // the condition introduced, not a transient nested-clause value.
     let relative_player_scope = effect_ctx.relative_player_scope.clone();
 
+    // Constraint from full text (parsed during IR production so lowering has it)
+    let constraint = parse_trigger_constraint(&lower);
+
     // Parse the effect body
     let effect_for_parse_lower = effect_for_parse.to_lowercase();
     // CR 115.1d: Record root-level optional-target phrasing for the shared
@@ -1789,7 +1793,15 @@ pub(crate) fn parse_trigger_line_with_index_ir(
                 }
                 let ir =
                     parse_effect_chain_ir(&effect_for_parse, AbilityKind::Spell, &mut effect_ctx);
-                Some(TriggerBody::EffectChain(ir))
+                Some(TriggerBody::EffectChain(
+                    fail_closed_on_dropped_intervening_if(
+                        ir,
+                        &effect_for_parse,
+                        if_condition.as_ref(),
+                        constraint.as_ref(),
+                        &effect_ctx,
+                    ),
+                ))
             })
         }
     } else {
@@ -1800,9 +1812,6 @@ pub(crate) fn parse_trigger_line_with_index_ir(
 
     // Parse the condition to get TriggerMode + partial TriggerDefinition
     let (condition, partial_def) = parse_trigger_condition(condition_text, ctx);
-
-    // Constraint from full text (parsed during IR production so lowering has it)
-    let constraint = parse_trigger_constraint(&lower);
 
     TriggerIr {
         condition,
@@ -6421,6 +6430,52 @@ fn extract_if_condition(text: &str) -> (String, Option<TriggerCondition>) {
 /// CR 603.4: the bare `if ` keyword token that opens a condition clause.
 fn parse_if_keyword(input: &str) -> OracleResult<'_, ()> {
     value((), tag("if ")).parse(input)
+}
+
+/// CR 603.4: a triggered ability "may read 'When/Whenever/At [trigger event], if
+/// [condition], [effect].'" and triggers only if the condition is true. When a
+/// LEADING `if` neither hoisted to the trigger condition nor became a condition
+/// on the effect chain's first clause, nothing represents it: the trigger would
+/// fire unconditionally. The swallow detector cannot be relied on to report
+/// that, because any unrelated `condition`/`constraint` slot in the unit (for
+/// example `OnlyDuringYourTurn` on every "your upkeep" trigger) discharges its
+/// slot probe. Replace the body with the clause gap so the trigger fails closed.
+///
+/// Only the LEADING position is intervening. A later-sentence `If` is a
+/// resolution-time instruction of its own and stays with the effect chain.
+fn fail_closed_on_dropped_intervening_if(
+    ir: EffectChainIr,
+    effect_text: &str,
+    hoisted: Option<&TriggerCondition>,
+    constraint: Option<&TriggerConstraint>,
+    ctx: &ParseContext,
+) -> EffectChainIr {
+    let effect_text = effect_text.trim_start();
+    // CR 603.4: "if it's the Nth [type] spell you cast this turn" is represented by
+    // the fire-time ordinal constraint, not by a condition on the chain.
+    let guard_is_ordinal_constraint =
+        matches!(constraint, Some(TriggerConstraint::NthSpellThisTurn { .. }));
+    let leading_guard_dropped = hoisted.is_none()
+        && !guard_is_ordinal_constraint
+        && parse_if_keyword(&effect_text.to_lowercase()).is_ok()
+        && split_leading_conditional(effect_text).is_some()
+        && ir.clauses.first().is_some_and(|clause| {
+            clause.condition.is_none()
+                && clause.parsed.condition.is_none()
+                && clause.parsed.unlowered_guard.is_none()
+                && !matches!(clause.parsed.effect, Effect::Unimplemented { .. })
+        });
+    if !leading_guard_dropped {
+        return ir;
+    }
+    EffectChainIr::single_clause(
+        effect_text,
+        ir.kind,
+        parsed_clause(clause_gap_unimplemented(effect_text)),
+        None,
+        ctx.actor.clone(),
+        ctx.in_trigger,
+    )
 }
 
 /// CR 608.2c: the connectors that open the ELSE branch of a written-order

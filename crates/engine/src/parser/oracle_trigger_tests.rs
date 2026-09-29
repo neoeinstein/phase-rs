@@ -2336,11 +2336,12 @@ fn nonself_etb_source_zone_shorthand_is_not_misbound_to_source() {
             if filter.type_filters.contains(&TypeFilter::Creature)
                 && filter.properties.iter().any(|property| matches!(property, FilterProp::Another))
     ));
+    // CR 603.4: the unbound guard fails the trigger closed instead of firing unconditionally.
     assert!(matches!(
         def.execute
             .as_deref()
             .map(|ability| ability.effect.as_ref()),
-        Some(Effect::Draw { .. })
+        Some(Effect::Unimplemented { .. })
     ));
     assert_ne!(
         def.condition,
@@ -3418,12 +3419,13 @@ fn gendered_past_type_condition_does_not_hoist_outside_leading_dies_position() {
     assert_eq!(non_dies.mode, TriggerMode::ChangesZone);
     assert_eq!(non_dies.destination, Some(Zone::Battlefield));
     assert_eq!(non_dies.condition, None);
+    // CR 603.4: the unhoisted guard fails the trigger closed instead of firing unconditionally.
     assert!(matches!(
         non_dies
             .execute
             .as_deref()
             .map(|ability| ability.effect.as_ref()),
-        Some(Effect::Draw { .. })
+        Some(Effect::Unimplemented { .. })
     ));
     let non_dies_card = parse_oracle_text(
         "When this creature enters, if she was a land, draw a card.",
@@ -3433,18 +3435,11 @@ fn gendered_past_type_condition_does_not_hoist_outside_leading_dies_position() {
         &[],
     );
     assert!(
-        non_dies_card.parse_warnings.iter().any(|warning| matches!(
-            warning,
-            OracleDiagnostic::SwallowedClause {
-                detector,
-                description,
-                line_index: 0,
-                ..
-            } if detector == "Condition_If"
-                && description == "When this creature enters, if she was a land, draw a card."
-        )),
-        "the non-dies clause must remain an exact honest deferral: {:?}",
-        non_dies_card.parse_warnings
+        non_dies_card.triggers.iter().any(|trigger| trigger
+            .execute
+            .as_deref()
+            .is_some_and(|ability| matches!(&*ability.effect, Effect::Unimplemented { .. }))),
+        "the non-dies clause must remain an honest deferral: a clause gap, not an unconditional trigger"
     );
 
     let trailing = parse_trigger_line(
@@ -23406,12 +23401,12 @@ fn trigger_non_dies_head_does_not_capture_dealt_damage_if() {
     // creature from the death event, so the "if ... dealt damage to it this turn"
     // arm must fire ONLY on a proven battlefield->graveyard head. On a non-dies
     // (enters) head the clause must stay honestly unrepresented (condition None,
-    // left to swallow as a Condition_If diagnostic) rather than mis-parse. Paired
+    // and the trigger fails closed with a clause gap) rather than mis-parse. Paired
     // with `trigger_dies_if_source_dealt_damage_intervening_if` above — same
     // clause, dies head -> condition Some — so this negative is non-vacuous: it
     // proves the GATE blocks the hoist, not that the phrase is unparseable. The
-    // `Draw` execute assertion is the reach-guard proving the clause reached the
-    // extract path (draw still parsed from the residual, as it did pre-fix).
+    // `Unimplemented` execute assertion is the reach-guard proving the clause reached
+    // the extract path and was rejected there (CR 603.4).
     let def = parse_trigger_line(
         "When Test Card enters the battlefield, if Test Card dealt damage to it this turn, draw a card.",
         "Test Card",
@@ -23422,7 +23417,7 @@ fn trigger_non_dies_head_does_not_capture_dealt_damage_if() {
     );
     assert!(matches!(
         def.execute.as_deref().map(|a| a.effect.as_ref()),
-        Some(Effect::Draw { .. })
+        Some(Effect::Unimplemented { .. })
     ));
 }
 
@@ -25964,8 +25959,8 @@ fn extract_didnt_have_non_keyword_stays_swallowed() {
         def.condition, None,
         "a non-keyword possession object must not bind a condition"
     );
-    // The swallow warning must still fire at the card-parse level (coverage
-    // stays honest for the rejected clause).
+    // CR 603.4: the unrepresentable guard fails the trigger closed at the
+    // card-parse level, so coverage stays honest for the rejected clause.
     let parsed = parse_oracle_text(
         "Whenever a creature you control dies, if it didn't have fun, draw a card.",
         "Test Joyless Mourner",
@@ -25974,12 +25969,11 @@ fn extract_didnt_have_non_keyword_stays_swallowed() {
         &[],
     );
     assert!(
-        parsed.parse_warnings.iter().any(|w| matches!(
-            w,
-            OracleDiagnostic::SwallowedClause { detector, .. } if detector == "Condition_If"
-        )),
-        "Condition_If swallow must still fire for the unparsed clause: {:?}",
-        parsed.parse_warnings
+        parsed.triggers.iter().any(|trigger| trigger
+            .execute
+            .as_deref()
+            .is_some_and(|ability| matches!(&*ability.effect, Effect::Unimplemented { .. }))),
+        "the rejected intervening-if must fail the trigger closed with a clause gap"
     );
 }
 
@@ -26001,8 +25995,8 @@ fn extract_didnt_have_landwalk_stays_swallowed() {
         def.condition, None,
         "a landwalk possession object must not bind a kind-level condition"
     );
-    // The swallow warning must still fire at the card-parse level (coverage
-    // stays honest for the rejected clause).
+    // CR 603.4: the unrepresentable guard fails the trigger closed at the
+    // card-parse level, so coverage stays honest for the rejected clause.
     let parsed = parse_oracle_text(
         "Whenever a creature you control dies, if it didn't have islandwalk, draw a card.",
         "Test Landlocked Mourner",
@@ -26011,12 +26005,11 @@ fn extract_didnt_have_landwalk_stays_swallowed() {
         &[],
     );
     assert!(
-        parsed.parse_warnings.iter().any(|w| matches!(
-            w,
-            OracleDiagnostic::SwallowedClause { detector, .. } if detector == "Condition_If"
-        )),
-        "Condition_If swallow must still fire for the rejected landwalk clause: {:?}",
-        parsed.parse_warnings
+        parsed.triggers.iter().any(|trigger| trigger
+            .execute
+            .as_deref()
+            .is_some_and(|ability| matches!(&*ability.effect, Effect::Unimplemented { .. }))),
+        "the rejected intervening-if must fail the trigger closed with a clause gap"
     );
 }
 
@@ -26038,8 +26031,8 @@ fn extract_didnt_have_keyword_on_etb_trigger_stays_swallowed() {
         def.condition, None,
         "keyword possession on an ETB head must not bind a dies look-back condition"
     );
-    // The swallow warning must still fire at the card-parse level (coverage
-    // stays honest for the dropped clause).
+    // CR 603.4: the unrepresentable guard fails the trigger closed at the
+    // card-parse level, so coverage stays honest for the dropped clause.
     let parsed = parse_oracle_text(
         "When this creature enters, if it didn't have decayed, draw a card.",
         "Test Fresh Arrival",
@@ -26048,12 +26041,11 @@ fn extract_didnt_have_keyword_on_etb_trigger_stays_swallowed() {
         &[],
     );
     assert!(
-        parsed.parse_warnings.iter().any(|w| matches!(
-            w,
-            OracleDiagnostic::SwallowedClause { detector, .. } if detector == "Condition_If"
-        )),
-        "Condition_If swallow must still fire for the shape-rejected clause: {:?}",
-        parsed.parse_warnings
+        parsed.triggers.iter().any(|trigger| trigger
+            .execute
+            .as_deref()
+            .is_some_and(|ability| matches!(&*ability.effect, Effect::Unimplemented { .. }))),
+        "the rejected intervening-if must fail the trigger closed with a clause gap"
     );
 }
 
@@ -26073,8 +26065,8 @@ fn extract_didnt_have_keyword_on_ltb_trigger_stays_swallowed() {
         def.condition, None,
         "keyword possession on an LTB head must not bind a dies look-back condition"
     );
-    // The swallow warning must still fire at the card-parse level (coverage
-    // stays honest for the dropped clause).
+    // CR 603.4: the unrepresentable guard fails the trigger closed at the
+    // card-parse level, so coverage stays honest for the dropped clause.
     let parsed = parse_oracle_text(
         "Whenever a creature you control leaves the battlefield, if it didn't have decayed, draw a card.",
         "Test Departure Watcher",
@@ -26083,12 +26075,11 @@ fn extract_didnt_have_keyword_on_ltb_trigger_stays_swallowed() {
         &[],
     );
     assert!(
-        parsed.parse_warnings.iter().any(|w| matches!(
-            w,
-            OracleDiagnostic::SwallowedClause { detector, .. } if detector == "Condition_If"
-        )),
-        "Condition_If swallow must still fire for the shape-rejected clause: {:?}",
-        parsed.parse_warnings
+        parsed.triggers.iter().any(|trigger| trigger
+            .execute
+            .as_deref()
+            .is_some_and(|ability| matches!(&*ability.effect, Effect::Unimplemented { .. }))),
+        "the rejected intervening-if must fail the trigger closed with a clause gap"
     );
 }
 
@@ -34706,7 +34697,10 @@ fn trailing_discard_unless_filter_binds_to_its_own_clause() {
         "Test Card",
     );
 
-    assert_eq!(def.unless_pay, None, "unless must not be hoisted to the trigger");
+    assert_eq!(
+        def.unless_pay, None,
+        "unless must not be hoisted to the trigger"
+    );
     let exec = def.execute.as_deref().expect("trigger execute body");
     assert!(matches!(&*exec.effect, Effect::Draw { .. }));
     let discard = exec.sub_ability.as_deref().expect("discard clause");
@@ -34717,4 +34711,76 @@ fn trailing_discard_unless_filter_binds_to_its_own_clause() {
             ..
         }
     ));
+}
+
+/// CR 603.4: a leading intervening-if the condition grammar cannot express must
+/// fail the trigger closed. The unrelated `OnlyDuringYourTurn` constraint on a
+/// "your upkeep" trigger must not be able to hide the dropped condition.
+#[test]
+fn unrecognized_leading_intervening_if_fails_the_trigger_closed() {
+    let def = parse_trigger_line(
+        "At the beginning of your upkeep, if the moon is made of cheese, you gain 1 life.",
+        "Test Card",
+    );
+
+    assert_eq!(def.condition, None, "nothing was recognized to hoist");
+    assert!(
+        def.constraint.is_some(),
+        "reach guard: the unrelated constraint that used to mask the drop is present"
+    );
+    let exec = def.execute.as_deref().expect("trigger execute body");
+    assert!(
+        matches!(&*exec.effect, Effect::Unimplemented { .. }),
+        "an unrecognized intervening-if must not fire unconditionally"
+    );
+}
+
+/// CR 603.4: the same fail-closed rule holds when the body is optional — the
+/// "you may" peel must not strip the guard and leave a bare optional effect.
+#[test]
+fn unrecognized_leading_intervening_if_with_optional_body_fails_closed() {
+    let def = parse_trigger_line(
+        "At the beginning of your upkeep, if the moon is made of cheese, you may draw a card.",
+        "Test Card",
+    );
+
+    assert_eq!(def.condition, None);
+    let exec = def.execute.as_deref().expect("trigger execute body");
+    assert!(matches!(&*exec.effect, Effect::Unimplemented { .. }));
+}
+
+/// CR 603.4: only the LEADING `if` is intervening. A later-sentence resolution
+/// `if` stays with the effect chain, so the unconditional first instruction is
+/// still parsed as itself.
+#[test]
+fn later_sentence_if_is_not_treated_as_an_intervening_if() {
+    let def = parse_trigger_line(
+        "At the beginning of your upkeep, draw a card. If the moon is made of cheese, you gain 1 life.",
+        "Test Card",
+    );
+
+    let exec = def.execute.as_deref().expect("trigger execute body");
+    assert!(matches!(&*exec.effect, Effect::Draw { .. }));
+}
+
+/// CR 603.4: conditions the shared grammar can express are hoisted onto the
+/// trigger instead of failing closed — one per state-condition shape.
+#[test]
+fn expressible_intervening_ifs_hoist_to_the_trigger_condition() {
+    for text in [
+        "At the beginning of your upkeep, if each player has 10 or less life, you gain 1 life.",
+        "At the beginning of your upkeep, if all nonland permanents you control are white, you gain 1 life.",
+        "Whenever a creature dies, if another creature is on the battlefield, you gain 1 life.",
+    ] {
+        let def = parse_trigger_line(text, "Test Card");
+        assert!(
+            def.condition.is_some(),
+            "the condition must hoist for {text:?}"
+        );
+        let exec = def.execute.as_deref().expect("trigger execute body");
+        assert!(
+            matches!(&*exec.effect, Effect::GainLife { .. }),
+            "the effect body must survive the hoist for {text:?}"
+        );
+    }
 }
