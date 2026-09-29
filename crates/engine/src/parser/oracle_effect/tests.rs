@@ -74798,6 +74798,28 @@ fn put_top_of_library_into_graveyard_stays_mill() {
     }
 }
 
+/// A "perpetually get(s) ±" clause the fixed-delta effect cannot model (dynamic
+/// amount, zone-wide, battlefield-wide or compound subject) fails closed instead of
+/// lowering to an until-end-of-turn pump.
+#[test]
+fn perpetual_pt_unmodelable_subject_or_amount_is_unimplemented() {
+    for text in [
+        "Creature cards in your graveyard perpetually get +1/+1.",
+        "Creature cards in your hand perpetually get +2/+0.",
+        "Creature cards in your graveyard perpetually get +X/+X, where X is the number of lands you control.",
+        "Creatures you control perpetually get +1/+1.",
+        "Creatures you control and creature cards in your hand perpetually get +1/+1.",
+        "The topmost creature card in your library perpetually gets +1/+1.",
+    ] {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        assert!(
+            matches!(def.effect.as_ref(), Effect::Unimplemented { .. }),
+            "{text}: {:?}",
+            def.effect
+        );
+    }
+}
+
 /// CR 120.3 + CR 608.2f: "each A and each B" object-type lists name ONE set of
 /// damaged permanents; every leg must survive into the `DamageAll` filter.
 #[test]

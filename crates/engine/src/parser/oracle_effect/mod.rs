@@ -73,7 +73,7 @@ use crate::parser::oracle_static::parse_passive_cant_be_cast_spell_filter;
 #[cfg(test)]
 use crate::parser::oracle_trigger::parse_trigger_line;
 use nom::branch::alt;
-use nom::bytes::complete::{tag, take_until};
+use nom::bytes::complete::{tag, take_till, take_until};
 use nom::character::complete::{anychar, multispace0, multispace1, space1};
 use nom::combinator::{
     all_consuming, eof, map, map_opt, not, opt, peek, recognize, rest, value, verify,
@@ -11497,6 +11497,78 @@ fn try_parse_perpetual_base_pt(tp: TextPair) -> Option<Effect> {
 /// crewed Vehicle). The clause tail must be fully consumed so compound riders
 /// on other perpetual forms fall through to `Unimplemented`.
 fn try_parse_perpetual_modify_pt(tp: TextPair) -> Option<Effect> {
+    try_parse_perpetual_modify_pt_single(tp).or_else(|| perpetual_modify_pt_gap(tp))
+}
+
+/// "<subject> perpetually get(s) " head used by the gap arm: splits
+/// the clause at the perpetual verb and returns `(subject, remainder after the
+/// verb)`. Rejects clauses with no `perpetually get(s)` so unrelated text never
+/// reaches the gap fallback.
+fn split_perpetual_get_clause(lower: &str) -> Option<(&str, &str)> {
+    let (rest, subject) = take_until::<_, _, OracleError<'_>>(" perpetually get")
+        .parse(lower)
+        .ok()?;
+    let (rest, _) = tag::<_, _, OracleError<'_>>(" perpetually get")
+        .parse(rest)
+        .ok()?;
+    let (rest, _) = alt((
+        tag::<_, _, OracleError<'_>>("s "),
+        tag::<_, _, OracleError<'_>>(" "),
+    ))
+    .parse(rest)
+    .ok()?;
+    // A quote in the subject means the verb sits inside a quoted (granted)
+    // ability, whose own parse owns it — not this clause's subject.
+    let (unquoted, _) = take_till::<_, _, OracleError<'_>>(|c| c == '"')
+        .parse(subject)
+        .ok()?;
+    unquoted.is_empty().then_some((subject, rest))
+}
+
+/// True when `subject` belongs to the chain splitter / subject binder rather
+/// than to this clause: a bare "it" anaphor (the binder fails it closed when
+/// unbound), or a verb-led lead-in joined to a pronoun subject ("return it to
+/// the battlefield and it …"), which the splitter breaks into separate clauses.
+fn perpetual_subject_is_chain_led(subject: &str) -> bool {
+    all_consuming(tag::<_, _, OracleError<'_>>("it"))
+        .parse(subject)
+        .is_ok()
+        || [" and it", " and they", " and that "].iter().any(|joiner| {
+            take_until::<_, _, OracleError<'_>>(*joiner)
+                .parse(subject)
+                .is_ok()
+        })
+}
+
+/// A "perpetually get(s) ±" clause no arm above can model faithfully (a dynamic
+/// "+X/+X where X is …" amount, a compound subject, a battlefield-wide or
+/// random/topmost subject, a trailing rider). `ModifyPowerToughness` carries
+/// fixed deltas and the resolver has no such subject binding, so lowering it to
+/// the generic pump would silently turn a permanent edit into an
+/// until-end-of-turn one. Fail closed instead.
+///
+/// Zone-wide subjects ("creature cards in your graveyard perpetually get +1/+1")
+/// land here too: `Effect::target_filter` surfaces any typed `ApplyPerpetual`
+/// filter as a stack target slot, so the resolver would edit the one chosen card
+/// instead of every matching card. They stay honest-red until the effect can
+/// express an untargeted population.
+fn perpetual_modify_pt_gap(tp: TextPair) -> Option<Effect> {
+    let (subject, rest) = split_perpetual_get_clause(tp.lower)?;
+    // Chain-splitter / subject-binder shapes keep their own handling.
+    (!perpetual_subject_is_chain_led(subject)).then_some(())?;
+    // Signed delta head only ("+1/+1", "+X/+X", "-2/-0"): the tail is what this
+    // gap exists to reject, so it is not parsed further.
+    peek(alt((
+        tag::<_, _, OracleError<'_>>("+"),
+        tag("-"),
+        tag("\u{2212}"),
+    )))
+    .parse(rest)
+    .ok()?;
+    Some(Effect::unimplemented("perpetual_modify_pt", tp.original))
+}
+
+fn try_parse_perpetual_modify_pt_single(tp: TextPair) -> Option<Effect> {
     fn tail_done(tail: &str) -> bool {
         tail.is_empty() || tail == "."
     }
