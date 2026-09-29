@@ -74875,3 +74875,98 @@ fn damage_all_each_object_list_keeps_player_leg_separate() {
     assert_eq!(filters.len(), 2);
     assert_eq!(*player_filter, Some(PlayerFilter::All));
 }
+
+/// Collects the effect chain (primary then each `sub_ability`) as
+/// `(effect, multi_target)` pairs.
+fn multi_slot_chain(text: &str) -> Vec<(Effect, Option<MultiTargetSpec>)> {
+    let mut out = Vec::new();
+    let mut cur = Some(parse_effect_chain(text, AbilityKind::Spell));
+    while let Some(def) = cur {
+        out.push((*def.effect.clone(), def.multi_target.clone()));
+        cur = def.sub_ability.map(|b| *b);
+    }
+    out
+}
+
+/// The `TypeFilter`s of a chain link's target, for slot-shape assertions.
+fn slot_types(effect: &Effect) -> Vec<TypeFilter> {
+    let target = match effect {
+        Effect::Destroy { target, .. } | Effect::ChangeZone { target, .. } => target,
+        other => panic!("unexpected slot effect {other:?}"),
+    };
+    typed_of(target).type_filters.clone()
+}
+
+/// CR 601.2c + CR 115.1: each target-led conjunct of one instruction is a
+/// separate announced slot; the chain keeps one link per slot with its own
+/// filter and "up to one" cardinality, over the comma / "and" / "and/or" list
+/// grammar and with or without a shared zone/destination tail.
+#[test]
+fn multi_target_list_keeps_one_slot_per_conjunct() {
+    for (text, expected) in [
+        (
+            "Destroy up to one target artifact, up to one target creature, and up to one target land.",
+            vec![TypeFilter::Artifact, TypeFilter::Creature, TypeFilter::Land],
+        ),
+        (
+            "Destroy up to one target artifact, up to one target creature, and/or up to one target land.",
+            vec![TypeFilter::Artifact, TypeFilter::Creature, TypeFilter::Land],
+        ),
+        (
+            "Exile up to one target artifact, up to one target creature, up to one target enchantment, and up to one target land.",
+            vec![
+                TypeFilter::Artifact,
+                TypeFilter::Creature,
+                TypeFilter::Enchantment,
+                TypeFilter::Land,
+            ],
+        ),
+    ] {
+        let chain = multi_slot_chain(text);
+        assert_eq!(
+            chain.iter().map(|(e, _)| slot_types(e)).collect::<Vec<_>>(),
+            expected.iter().map(|t| vec![t.clone()]).collect::<Vec<_>>(),
+            "{text}"
+        );
+        for (_, multi) in &chain {
+            assert_eq!(
+                multi,
+                &Some(MultiTargetSpec::up_to(QuantityExpr::Fixed { value: 1 })),
+                "{text}"
+            );
+        }
+    }
+}
+
+/// CR 601.2c: a shared "from <zone> to <destination>" tail applies to
+/// every slot of a list, including the slots written before the zone phrase.
+#[test]
+fn multi_target_list_shares_zone_and_destination_tail() {
+    for text in [
+        "Return up to one target instant card and up to one target sorcery card from your graveyard to your hand.",
+        "Return up to one target instant card, up to one target sorcery card, and up to one target land card from your graveyard to your hand.",
+    ] {
+        let chain = multi_slot_chain(text);
+        assert!(chain.len() >= 2, "{text}");
+        for (effect, multi) in &chain {
+            let Effect::ChangeZone {
+                origin,
+                destination,
+                target,
+                ..
+            } = effect
+            else {
+                panic!("{text}: expected ChangeZone, got {effect:?}");
+            };
+            assert_eq!(*origin, Some(Zone::Graveyard), "{text}");
+            assert_eq!(*destination, Zone::Hand, "{text}");
+            assert!(
+                typed_of(target)
+                    .properties
+                    .contains(&FilterProp::InZone { zone: Zone::Graveyard }),
+                "{text}"
+            );
+            assert!(multi.is_some(), "{text}");
+        }
+    }
+}

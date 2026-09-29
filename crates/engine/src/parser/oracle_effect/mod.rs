@@ -8,6 +8,7 @@ pub(crate) mod imperative;
 pub(super) mod lower;
 pub(crate) mod mana;
 pub(crate) mod meld;
+mod multi_target_list;
 mod search;
 pub(crate) mod sequence;
 pub(crate) mod subject;
@@ -18697,6 +18698,12 @@ fn lower_imperative_clause(text: &str, ctx: &mut ParseContext) -> ParsedEffectCl
         return clause;
     }
     if let Some(clause) = try_split_targeted_compound(text, ctx) {
+        return clause;
+    }
+    // CR 601.2c: several target-led conjuncts of one instruction ("destroy up to
+    // one target A, up to one target B, and up to one target C") each open their
+    // own slot; runs after the bare-`and` splitter so its shapes keep priority.
+    if let Some(clause) = multi_target_list::try_split_multi_target_list(text, ctx) {
         return clause;
     }
 
