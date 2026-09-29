@@ -3888,10 +3888,7 @@ pub(crate) fn parse_static_line_inner(
         }) {
             // An unparseable gate must not degrade to an unconditional doubler:
             // decline so the line stays a flagged gap.
-            def.condition = parse_static_condition(condition_text);
-            if def.condition.is_none() {
-                return None;
-            }
+            def.condition = Some(parse_static_condition(condition_text)?);
         }
         return Some(def);
     }
