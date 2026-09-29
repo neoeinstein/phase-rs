@@ -5046,7 +5046,7 @@ pub(crate) fn is_adjective_prefix_prop(prop: &FilterProp) -> bool {
             // CR 509.1h: combat-status prefixes "attacking/blocking/unblocked".
             | FilterProp::Attacking { defender: None }
             | FilterProp::Blocking
-            | FilterProp::Unblocked
+            | FilterProp::BlockStatus { .. }
             // CR 105.1 + CR 205.2: color / supertype adjectives.
             | FilterProp::HasColor { .. }
             | FilterProp::ColorCount { .. }
@@ -5161,7 +5161,7 @@ fn prop_reads_creature_pt(prop: &FilterProp) -> bool {
         | FilterProp::Blocking
         | FilterProp::BlockingSource
         | FilterProp::CombatRelation { .. }
-        | FilterProp::Unblocked
+        | FilterProp::BlockStatus { .. }
         | FilterProp::AttackingAlone
         | FilterProp::BlockingAlone
         | FilterProp::Tapped
@@ -6210,7 +6210,7 @@ pub(crate) fn parse_combat_status_prefix(text: &str) -> Option<(FilterProp, usiz
     if let Ok((rest, prop)) = nom_filter::parse_property_filter(text) {
         if matches!(
             prop,
-            FilterProp::Unblocked
+            FilterProp::BlockStatus { .. }
                 | FilterProp::Attacking { defender: None }
                 | FilterProp::Blocking
                 | FilterProp::Tapped
@@ -10630,6 +10630,7 @@ mod tests {
     use super::*;
     use crate::parser::oracle_ir::context::ParseContext;
     use crate::parser::oracle_ir::diagnostic::OracleDiagnostic;
+    use crate::types::ability::AttackerBlockStatus;
     use crate::types::ability::{PtStat, PtValueScope};
     use crate::types::counter::CounterType;
 
@@ -18298,7 +18299,15 @@ mod tests {
     #[test]
     fn combat_status_prefix_unblocked() {
         let result = parse_combat_status_prefix("unblocked attacking creatures");
-        assert_eq!(result, Some((FilterProp::Unblocked, 10)));
+        assert_eq!(
+            result,
+            Some((
+                FilterProp::BlockStatus {
+                    status: AttackerBlockStatus::Unblocked
+                },
+                10
+            ))
+        );
         // Second call on remainder should get Attacking
         let result2 = parse_combat_status_prefix("attacking creatures");
         assert_eq!(
@@ -18308,12 +18317,52 @@ mod tests {
     }
 
     #[test]
+    fn combat_status_prefix_blocked() {
+        // CR 509.1h: "blocked" as a prefix adjective consumes "blocked ".
+        assert_eq!(
+            parse_combat_status_prefix("blocked creature"),
+            Some((
+                FilterProp::BlockStatus {
+                    status: AttackerBlockStatus::Blocked
+                },
+                8
+            ))
+        );
+        // Postfix forms are handled elsewhere and must not be consumed.
+        assert_eq!(parse_combat_status_prefix("blocked by a creature"), None);
+        assert_eq!(parse_combat_status_prefix("blocked this turn"), None);
+    }
+
+    #[test]
+    fn blocking_or_blocked_creature_parses_as_disjunction() {
+        let (filter, remainder) = parse_type_phrase_folding("blocking or blocked creature");
+        assert!(remainder.trim().is_empty(), "remainder: '{remainder}'");
+        let TargetFilter::Or { filters } = &filter else {
+            panic!("expected Or, got {filter:?}");
+        };
+        assert_eq!(filters.len(), 2);
+        let has = |prop: FilterProp| {
+            filters.iter().any(|f| {
+                matches!(f, TargetFilter::Typed(tf)
+                    if tf.type_filters.contains(&TypeFilter::Creature)
+                        && tf.properties.contains(&prop))
+            })
+        };
+        assert!(has(FilterProp::Blocking));
+        assert!(has(FilterProp::BlockStatus {
+            status: AttackerBlockStatus::Blocked
+        }));
+    }
+
+    #[test]
     fn parse_type_phrase_unblocked_attacking_creatures_you_control() {
         let (filter, remainder) =
             parse_type_phrase_folding("unblocked attacking creatures you control");
         assert!(remainder.trim().is_empty(), "remainder: '{remainder}'");
         if let TargetFilter::Typed(tf) = &filter {
-            assert!(tf.properties.contains(&FilterProp::Unblocked));
+            assert!(tf.properties.contains(&FilterProp::BlockStatus {
+                status: AttackerBlockStatus::Unblocked
+            }));
             assert!(tf
                 .properties
                 .contains(&FilterProp::Attacking { defender: None }));

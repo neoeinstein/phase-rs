@@ -8071,6 +8071,7 @@ pub(super) fn find_predicate_start(text: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::ability::AttackerBlockStatus;
     use crate::types::ability::{
         AbilityKind, BasicLandType, ContinuousModification, ControllerRef, Effect, TypeFilter,
     };
@@ -11543,10 +11544,13 @@ mod tests {
             "target must be a creature filter, got {type_filters:?}"
         );
         assert!(
-            properties
-                .iter()
-                .any(|p| matches!(p, FilterProp::Unblocked)),
-            "target must carry FilterProp::Unblocked (CR 509.1h), got {properties:?}"
+            properties.iter().any(|p| matches!(
+                p,
+                FilterProp::BlockStatus {
+                    status: AttackerBlockStatus::Unblocked
+                }
+            )),
+            "target must carry an Unblocked BlockStatus (CR 509.1h), got {properties:?}"
         );
         assert!(
             properties

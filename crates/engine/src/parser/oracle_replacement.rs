@@ -14187,6 +14187,7 @@ fn parse_unconditional_life_floor_to_zero_form(input: &str) -> OracleResult<'_, 
 mod tests {
     use super::*;
     use crate::parser::oracle::parse_oracle_text;
+    use crate::types::ability::AttackerBlockStatus;
     use crate::types::ability::{
         AbilityCondition, Comparator, ControllerRef, CountScope, QuantityExpr,
         QuantityModification, QuantityRef, ReplacementCondition, RestrictionExpiry, ShieldKind,
@@ -23595,7 +23596,9 @@ mod tests {
         );
         match &def.damage_source_filter {
             Some(TargetFilter::Typed(tf)) => assert!(
-                tf.properties.contains(&FilterProp::Unblocked),
+                tf.properties.contains(&FilterProp::BlockStatus {
+                    status: AttackerBlockStatus::Unblocked
+                }),
                 "expected Unblocked property, got {:?}",
                 tf.properties
             ),
@@ -23626,7 +23629,9 @@ mod tests {
         );
         match &def.damage_source_filter {
             Some(TargetFilter::Typed(tf)) => {
-                assert!(tf.properties.contains(&FilterProp::Unblocked))
+                assert!(tf.properties.contains(&FilterProp::BlockStatus {
+                    status: AttackerBlockStatus::Unblocked
+                }))
             }
             other => panic!("expected a Typed damage_source_filter with Unblocked, got {other:?}"),
         }

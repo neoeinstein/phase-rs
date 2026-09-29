@@ -62289,7 +62289,7 @@ fn prop_has_chosen_color(p: &FilterProp) -> bool {
         | FilterProp::Blocking
         | FilterProp::BlockingSource
         | FilterProp::CombatRelation { .. }
-        | FilterProp::Unblocked
+        | FilterProp::BlockStatus { .. }
         | FilterProp::AttackingAlone
         | FilterProp::BlockingAlone
         | FilterProp::Tapped
@@ -75365,4 +75365,59 @@ fn plural_cant_regenerate_skips_a_destroy_separated_by_another_instruction() {
         })
         .collect();
     assert_eq!(flags, vec![false, true]);
+}
+
+/// CR 509.1h + CR 509.1g: "each blocking creature and each blocked creature" is
+/// a disjunction of the Blocking and blocked-BlockStatus creature filters.
+#[test]
+fn damage_all_blocking_and_blocked_creatures_keeps_both_legs() {
+    use crate::types::ability::{AttackerBlockStatus, TargetFilter, TypeFilter};
+
+    let def = parse_effect_chain(
+        "~ deals 3 damage to each blocking creature and each blocked creature.",
+        AbilityKind::Spell,
+    );
+    let Effect::DamageAll {
+        target: TargetFilter::Or { filters },
+        ..
+    } = &*def.effect
+    else {
+        panic!(
+            "expected DamageAll over an Or filter, got {:#?}",
+            def.effect
+        );
+    };
+    let has_leg = |prop: FilterProp| {
+        filters.iter().any(|f| {
+            matches!(f, TargetFilter::Typed(tf)
+                if tf.type_filters.contains(&TypeFilter::Creature)
+                    && tf.properties.contains(&prop))
+        })
+    };
+    assert!(has_leg(FilterProp::Blocking));
+    assert!(has_leg(FilterProp::BlockStatus {
+        status: AttackerBlockStatus::Blocked
+    }));
+}
+
+/// CR 509.1h: a lone "blocked creature" target carries the Blocked status.
+#[test]
+fn destroy_target_blocked_creature_carries_blocked_status() {
+    use crate::types::ability::{AttackerBlockStatus, TargetFilter, TypeFilter};
+
+    let def = parse_effect_chain("Destroy target blocked creature.", AbilityKind::Spell);
+    let Effect::Destroy {
+        target: TargetFilter::Typed(tf),
+        ..
+    } = &*def.effect
+    else {
+        panic!(
+            "expected Destroy over a Typed filter, got {:#?}",
+            def.effect
+        );
+    };
+    assert!(tf.type_filters.contains(&TypeFilter::Creature));
+    assert!(tf.properties.contains(&FilterProp::BlockStatus {
+        status: AttackerBlockStatus::Blocked
+    }));
 }

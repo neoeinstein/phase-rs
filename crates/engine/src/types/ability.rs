@@ -6321,6 +6321,13 @@ fn is_default_shared_quality_relation(value: &SharedQualityRelation) -> bool {
     matches!(value, SharedQualityRelation::Shares)
 }
 
+/// CR 509.1h: An attacking creature is either blocked or unblocked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AttackerBlockStatus {
+    Blocked,
+    Unblocked,
+}
+
 /// Combat relationship required by `FilterProp::CombatRelation`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CombatRelation {
@@ -6405,8 +6412,16 @@ pub enum FilterProp {
         relation: CombatRelation,
         subject: CombatRelationSubject,
     },
-    /// CR 509.1h: Matches attacking creatures with no blockers assigned.
-    Unblocked,
+    /// CR 509.1h: Matches attacking creatures by whether a blocker was ever
+    /// assigned to them (blocked) or not (unblocked).
+    ///
+    /// Backward compat: deserializes from the legacy unit tag `Unblocked`
+    /// (no fields) via `#[serde(alias)]`, defaulting `status = Unblocked`.
+    #[serde(alias = "Unblocked")]
+    BlockStatus {
+        #[serde(default = "default_unblocked_status")]
+        status: AttackerBlockStatus,
+    },
     /// CR 506.5: Matches a creature that is (or, via the zone-change look-back
     /// snapshot, was) the sole attacker — "attacking alone". Live evaluation
     /// reads combat; look-back evaluation reads
@@ -20284,6 +20299,12 @@ fn default_sum_aggregate() -> AggregateFunction {
 /// `zone` field; it always meant the player's library.
 fn default_most_prevalent_zone() -> crate::types::zones::Zone {
     crate::types::zones::Zone::Library
+}
+
+/// Backward-compat default for the legacy `FilterProp::Unblocked` unit variant.
+/// Old saves carried no `status` field; the tag itself meant "unblocked".
+fn default_unblocked_status() -> AttackerBlockStatus {
+    AttackerBlockStatus::Unblocked
 }
 
 /// Backward-compat default for the legacy
@@ -37927,7 +37948,12 @@ mod tests {
                 relation: CombatRelation::BlockingOrBlockedBy,
                 subject: CombatRelationSubject::ParentTarget,
             },
-            FilterProp::Unblocked,
+            FilterProp::BlockStatus {
+                status: AttackerBlockStatus::Unblocked,
+            },
+            FilterProp::BlockStatus {
+                status: AttackerBlockStatus::Blocked,
+            },
             FilterProp::Tapped,
             FilterProp::Untapped,
             FilterProp::HasHasteOrControlledSinceTurnBegan,
@@ -37982,6 +38008,19 @@ mod tests {
         let json = serde_json::to_string(&props).unwrap();
         let deserialized: Vec<FilterProp> = serde_json::from_str(&json).unwrap();
         assert_eq!(props, deserialized);
+    }
+
+    /// CR 509.1h: persisted states carrying the legacy unit variant
+    /// `{"type":"Unblocked"}` still deserialize, as `BlockStatus { Unblocked }`.
+    #[test]
+    fn legacy_unblocked_tag_deserializes_as_block_status() {
+        let legacy: FilterProp = serde_json::from_str(r#"{"type":"Unblocked"}"#).unwrap();
+        assert_eq!(
+            legacy,
+            FilterProp::BlockStatus {
+                status: AttackerBlockStatus::Unblocked,
+            }
+        );
     }
 
     /// CR 508.6: `AttackedThisTurn` parameterization is backward-compatible with
