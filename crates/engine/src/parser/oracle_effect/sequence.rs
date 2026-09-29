@@ -1638,6 +1638,12 @@ pub(super) fn split_clause_sequence(text: &str) -> Vec<ClauseChunk> {
                                         exile_conjunct_prepend(&before_lower, remainder_trimmed)
                                     })
                                     .or_else(|| {
+                                        mana_spent_damage_conjunct_prepend(
+                                            before_and,
+                                            remainder_trimmed,
+                                        )
+                                    })
+                                    .or_else(|| {
                                         untap_restriction_conjunct_prepend(
                                             before_and,
                                             remainder_trimmed,
@@ -1962,6 +1968,15 @@ fn split_comma_clause_boundary(current: &str, remainder: &str) -> Option<(Clause
         return Some((ClauseBoundary::Comma, whitespace_len));
     }
 
+    // CR 601.2h + CR 608.2c: "<effect A> if {C1} was spent to cast this
+    // spell, and <subject> <effect B> if {C2} was spent to cast this spell" — two
+    // independently mana-gated instructions. Each half owns its own condition, so
+    // the ", and" is a clause boundary even though the second half opens with a
+    // subject noun phrase (not a verb `starts_clause_text_or_conjugated` knows).
+    if starts_mana_spent_conjunct(&current_lower, &trimmed_lower) {
+        return Some((ClauseBoundary::Comma, whitespace_len));
+    }
+
     if starts_prefix_clause(&current_lower) {
         return None;
     }
@@ -2158,6 +2173,18 @@ fn split_comma_clause_boundary(current: &str, remainder: &str) -> Option<(Clause
     }
 
     None
+}
+
+/// CR 601.2h: True when the closing chunk already carries an
+/// "if <mana> was spent to cast <it>" condition and the text after the comma is
+/// an "and"-joined conjunct carrying its own such condition.
+fn starts_mana_spent_conjunct(current_lower: &str, trimmed_lower: &str) -> bool {
+    const SPENT: &str = "was spent to cast ";
+    tag::<_, _, OracleError<'_>>("and ")
+        .parse(trimmed_lower)
+        .is_ok()
+        && nom_primitives::scan_contains(current_lower, SPENT)
+        && nom_primitives::scan_contains(trimmed_lower, SPENT)
 }
 
 fn is_for_each_copy_token_continuation(
@@ -3612,6 +3639,32 @@ fn exile_conjunct_prepend(before_lower: &str, remainder_trimmed: &str) -> Option
         return None;
     }
     Some("exile ".to_string())
+}
+
+/// CR 106.3 + CR 120.2b + CR 601.2h: "<source> deals A damage to X if {C1} was
+/// spent to cast this spell and B damage to Y if {C2} was spent to cast this
+/// spell" — the second conjunct is a bare "<amount> damage …" tail that elides the
+/// "<source> deals" head and carries its own mana-spent condition. Returns the
+/// head (through "deals ") to prepend so the conjunct reaches the damage parser as
+/// its own gated clause. Requires both halves to carry a mana-spent condition, so
+/// an ungated multi-target damage chain keeps its own handling.
+fn mana_spent_damage_conjunct_prepend(before_and: &str, remainder_trimmed: &str) -> Option<String> {
+    const SPENT: &str = "was spent to cast ";
+    let before_lower = before_and.to_ascii_lowercase();
+    let remainder_lower = remainder_trimmed.to_ascii_lowercase();
+    if !nom_primitives::scan_contains(&before_lower, SPENT)
+        || !nom_primitives::scan_contains(&remainder_lower, SPENT)
+        || !starts_with_damage_amount_continuation(&remainder_lower)
+    {
+        return None;
+    }
+    let (_, head) = recognize(pair(
+        take_until::<_, _, OracleError<'_>>("deals "),
+        tag("deals "),
+    ))
+    .parse(before_lower.as_str())
+    .ok()?;
+    Some(before_and[..head.len()].to_string())
 }
 
 fn combat_requirement_conjunct_prepend(
@@ -10937,6 +10990,34 @@ mod tests {
             chunks.len(),
             chunks.iter().map(|c| &c.text).collect::<Vec<_>>()
         );
+    }
+
+    // CR 601.2h: two independently mana-gated conjuncts split at
+    // ", and" whatever the subject/verb of each half; a single gated clause with
+    // an ungated ", and" conjunct is left alone.
+    #[test]
+    fn mana_spent_conjuncts_split_at_comma_and() {
+        for (left, right) in [
+            (
+                "Creatures you control get +1/+0 until end of turn if {R} was spent to cast this spell",
+                "and creatures your opponents control lose flying until end of turn if {G} was spent to cast this spell",
+            ),
+            (
+                "Draw a card if {U} was spent to cast this spell",
+                "and target player gains 2 life if {W} was spent to cast this spell",
+            ),
+        ] {
+            let chunks = clause_texts(&format!("{left}, {right}"));
+            assert_eq!(chunks, vec![left.to_string(), right.to_string()]);
+        }
+    }
+
+    #[test]
+    fn mana_spent_condition_without_second_condition_does_not_force_split() {
+        let chunks = clause_texts(
+            "Creatures you control get +1/+0 until end of turn if {R} was spent to cast this spell, and creatures you control gain haste until end of turn",
+        );
+        assert_eq!(chunks.len(), 1);
     }
 
     // --- Bare " and " splitting: damage clause patterns ---
