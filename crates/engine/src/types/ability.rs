@@ -26291,10 +26291,13 @@ impl SubAbilityLink {
 /// this process for…" follows CR 608.2c) — each item is an INDEPENDENT OR-branch checked on its own
 /// keyword, so it must be evaluated regardless of any other branch's outcome.
 /// Stamped ONLY by the `ReplicatePerKeyword` lowering helpers
-/// (`attach_repeat_process_keywords`, `attach_perpetual_keyword_grants`) —
-/// never by ordinary sentence-boundary `SequentialSibling` stamping — so it
-/// cannot leak into a Thieving-Skydiver-shaped dependent continuation that
-/// also happens to carry `SequentialSibling`.
+/// (`attach_repeat_process_keywords`, `attach_perpetual_keyword_grants`) and by
+/// `mark_independent_mana_spent_gates` (a clause gated on the mana spent to cast
+/// the spell that directly follows another such clause, CR 601.2h — its gate
+/// reads the payment, never the previous clause) — never by ordinary
+/// sentence-boundary `SequentialSibling` stamping — so it cannot leak into a
+/// Thieving-Skydiver-shaped dependent continuation that also happens to carry
+/// `SequentialSibling`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum SiblingCondition {
     #[default]

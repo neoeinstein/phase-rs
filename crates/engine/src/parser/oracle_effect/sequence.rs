@@ -2,9 +2,9 @@ use crate::parser::oracle_nom::error::{oracle_err, OracleError, OracleResult};
 use nom::branch::alt;
 use nom::bytes::complete::{tag, tag_no_case, take_till, take_until};
 use nom::character::complete::multispace1;
-use nom::combinator::{all_consuming, eof, map, map_opt, opt, recognize, rest, value};
+use nom::combinator::{all_consuming, eof, map, map_opt, opt, rest, value};
 use nom::multi::separated_list1;
-use nom::sequence::{pair, preceded, terminated};
+use nom::sequence::{preceded, terminated};
 use nom::Parser;
 
 use super::super::oracle_nom::bridge::nom_on_lower;
@@ -1641,7 +1641,7 @@ pub(super) fn split_clause_sequence(text: &str) -> Vec<ClauseChunk> {
                                         exile_conjunct_prepend(&before_lower, remainder_trimmed)
                                     })
                                     .or_else(|| {
-                                        mana_spent_damage_conjunct_prepend(
+                                        mana_spent_amount_conjunct_prepend(
                                             before_and,
                                             remainder_trimmed,
                                         )
@@ -2180,14 +2180,29 @@ fn split_comma_clause_boundary(current: &str, remainder: &str) -> Option<(Clause
 
 /// CR 601.2h: True when the closing chunk already carries an
 /// "if <mana> was spent to cast <it>" condition and the text after the comma is
-/// an "and"-joined conjunct carrying its own such condition.
+/// an "and"-joined conjunct carrying its own such condition. The conjunct ends
+/// at the next sentence boundary, so a later sentence's condition cannot make an
+/// ungated conjunct look gated.
 fn starts_mana_spent_conjunct(current_lower: &str, trimmed_lower: &str) -> bool {
-    const SPENT: &str = "was spent to cast ";
     tag::<_, _, OracleError<'_>>("and ")
         .parse(trimmed_lower)
         .is_ok()
-        && nom_primitives::scan_contains(current_lower, SPENT)
-        && nom_primitives::scan_contains(trimmed_lower, SPENT)
+        && nom_primitives::scan_contains(current_lower, MANA_SPENT_TO_CAST)
+        && nom_primitives::scan_contains(
+            before_sentence_boundary(trimmed_lower),
+            MANA_SPENT_TO_CAST,
+        )
+}
+
+/// Phrase shared by every "if {C} was spent to cast <it>" gate.
+const MANA_SPENT_TO_CAST: &str = "was spent to cast ";
+
+/// The text up to the first sentence boundary (". "), or all of it when the text
+/// holds a single sentence.
+fn before_sentence_boundary(text: &str) -> &str {
+    take_until::<_, _, OracleError<'_>>(". ")
+        .parse(text)
+        .map_or(text, |(_, sentence)| sentence)
 }
 
 fn is_for_each_copy_token_continuation(
@@ -3644,30 +3659,55 @@ fn exile_conjunct_prepend(before_lower: &str, remainder_trimmed: &str) -> Option
     Some("exile ".to_string())
 }
 
-/// CR 120.2b + CR 601.2h: "<source> deals A damage to X if {C1} was
-/// spent to cast this spell and B damage to Y if {C2} was spent to cast this
-/// spell" — the second conjunct is a bare "<amount> damage …" tail that elides the
-/// "<source> deals" head and carries its own mana-spent condition. Returns the
-/// head (through "deals ") to prepend so the conjunct reaches the damage parser as
-/// its own gated clause. Requires both halves to carry a mana-spent condition, so
-/// an ungated multi-target damage chain keeps its own handling.
-fn mana_spent_damage_conjunct_prepend(before_and: &str, remainder_trimmed: &str) -> Option<String> {
-    const SPENT: &str = "was spent to cast ";
+/// What a mana-gated conjunct's elided head hands out, which fixes the noun the
+/// conjunct's amount must be followed by.
+#[derive(Clone, Copy)]
+enum ElidedHeadNoun {
+    /// CR 120.2b: "<source> deals A damage to X".
+    Damage,
+    /// CR 119.3: "<player> gains/loses A life".
+    Life,
+}
+
+fn parse_elided_head_verb(input: &str) -> OracleResult<'_, ElidedHeadNoun> {
+    alt((
+        value(ElidedHeadNoun::Damage, tag("deals ")),
+        value(
+            ElidedHeadNoun::Life,
+            alt((tag("gains "), tag("gain "), tag("loses "), tag("lose "))),
+        ),
+    ))
+    .parse(input)
+}
+
+/// CR 601.2h + CR 608.2c: "<subject> <verb> A <noun> if {C1} was spent to cast
+/// this spell and B <noun> if {C2} was spent to cast this spell" — the second
+/// conjunct is a bare "<amount> <noun> …" tail that elides the "<subject> <verb>"
+/// head ("~ deals", "you gain") and carries its own mana-spent condition. Returns
+/// the head (through the verb) to prepend so the conjunct reaches its parser as
+/// its own gated clause. Requires both halves to carry a mana-spent condition
+/// within their own sentence, so an ungated multi-target damage chain keeps its
+/// own handling.
+fn mana_spent_amount_conjunct_prepend(before_and: &str, remainder_trimmed: &str) -> Option<String> {
     let before_lower = before_and.to_ascii_lowercase();
     let remainder_lower = remainder_trimmed.to_ascii_lowercase();
-    if !nom_primitives::scan_contains(&before_lower, SPENT)
-        || !nom_primitives::scan_contains(&remainder_lower, SPENT)
-        || !starts_with_damage_amount_continuation(&remainder_lower)
+    let remainder_sentence = before_sentence_boundary(&remainder_lower);
+    if !nom_primitives::scan_contains(&before_lower, MANA_SPENT_TO_CAST)
+        || !nom_primitives::scan_contains(remainder_sentence, MANA_SPENT_TO_CAST)
     {
         return None;
     }
-    let (_, head) = recognize(pair(
-        take_until::<_, _, OracleError<'_>>("deals "),
-        tag("deals "),
-    ))
-    .parse(before_lower.as_str())
-    .ok()?;
-    Some(before_and[..head.len()].to_string())
+    let (_, noun, after_head) =
+        nom_primitives::scan_preceded(&before_lower, parse_elided_head_verb)?;
+    let amount_matches = match noun {
+        ElidedHeadNoun::Damage => starts_with_damage_amount_continuation(remainder_sentence),
+        ElidedHeadNoun::Life => parse_count_expr(remainder_sentence)
+            .is_some_and(|(_, rest)| tag::<_, _, OracleError<'_>>("life").parse(rest).is_ok()),
+    };
+    if !amount_matches {
+        return None;
+    }
+    Some(before_and[..before_lower.len() - after_head.len()].to_string())
 }
 
 fn combat_requirement_conjunct_prepend(
@@ -11109,6 +11149,53 @@ mod tests {
                 "~ deals 2 damage to each creature with flying if {G} was spent to cast this spell",
             ]
         );
+    }
+
+    // CR 119.3 + CR 601.2h: the elided "<subject> <verb>" head is restored for a
+    // gain-life conjunct too, not only for "deals".
+    #[test]
+    fn mana_spent_life_conjunct_restores_elided_head() {
+        for (verb, first, second) in [
+            ("gain", "You gain 2 life", "5 life"),
+            ("lose", "You lose 2 life", "5 life"),
+        ] {
+            let chunks = clause_texts(&format!(
+                "{first} if {{R}} was spent to cast this spell and {second} if {{G}} was spent to cast this spell"
+            ));
+            assert_eq!(
+                chunks,
+                vec![
+                    format!("{first} if {{R}} was spent to cast this spell"),
+                    format!("You {verb} {second} if {{G}} was spent to cast this spell"),
+                ]
+            );
+        }
+    }
+
+    // CR 601.2h: a "was spent to cast" in a LATER sentence does not gate this
+    // sentence's conjunct. Each negative is paired with the positive whose only
+    // difference is that the conjunct carries its own gate.
+    #[test]
+    fn mana_spent_split_stops_at_sentence_boundary() {
+        let later_sentence = "Draw a card if {G} was spent to cast this spell";
+        // Comma-and conjunct (subject-led second half).
+        let ungated = clause_texts(&format!(
+            "Creatures you control get +1/+0 until end of turn if {{R}} was spent to cast this spell, and creatures you control gain haste until end of turn. {later_sentence}"
+        ));
+        assert_eq!(ungated.len(), 2, "{ungated:?}");
+        let gated = clause_texts(&format!(
+            "Creatures you control get +1/+0 until end of turn if {{R}} was spent to cast this spell, and creatures you control gain haste until end of turn if {{U}} was spent to cast this spell. {later_sentence}"
+        ));
+        assert_eq!(gated.len(), 3, "{gated:?}");
+        // Elided-head conjunct.
+        let ungated = clause_texts(&format!(
+            "You gain 2 life if {{R}} was spent to cast this spell and 3 life. {later_sentence}"
+        ));
+        assert_eq!(ungated.len(), 2, "{ungated:?}");
+        let gated = clause_texts(&format!(
+            "You gain 2 life if {{R}} was spent to cast this spell and 3 life if {{U}} was spent to cast this spell. {later_sentence}"
+        ));
+        assert_eq!(gated.len(), 3, "{gated:?}");
     }
 
     #[test]

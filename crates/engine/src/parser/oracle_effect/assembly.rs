@@ -27,8 +27,8 @@ use crate::parser::oracle_nom::target::chain_text_mentions_chosen_object;
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, AggregateFunction,
     CastFromZoneDriver, CastingPermission, ChoiceType, Comparator, ControllerRef, DamageChannel,
-    Effect, PlayerFilter, PlayerScope, QuantityExpr, QuantityRef, StaticCondition, SubAbilityLink,
-    TapStateChange, TargetFilter,
+    Effect, PlayerFilter, PlayerScope, QuantityExpr, QuantityRef, SiblingCondition,
+    StaticCondition, SubAbilityLink, TapStateChange, TargetFilter,
 };
 use crate::types::game_state::TargetSelectionConstraint;
 use crate::types::zones::Zone;
@@ -1930,6 +1930,48 @@ fn declares_pump_target(effect: &Effect) -> bool {
             ..
         }
     )
+}
+
+/// CR 601.2h: whether `condition` reads only the mana spent to cast the source
+/// ("if {C} was spent to cast this spell"), in either its canonical
+/// `QuantityCheck { ManaSpentToCast }` form or the legacy `ManaColorSpent` form.
+fn is_mana_spent_gate(condition: &AbilityCondition) -> bool {
+    match condition {
+        AbilityCondition::ManaColorSpent { .. } => true,
+        AbilityCondition::QuantityCheck {
+            lhs:
+                QuantityExpr::Ref {
+                    qty: QuantityRef::ManaSpentToCast { .. },
+                },
+            ..
+        } => true,
+        AbilityCondition::Not { condition } => is_mana_spent_gate(condition),
+        AbilityCondition::And { conditions } | AbilityCondition::Or { conditions } => {
+            !conditions.is_empty() && conditions.iter().all(is_mana_spent_gate)
+        }
+        _ => false,
+    }
+}
+
+/// CR 608.2c + CR 601.2h: instructions are followed in the order written, each
+/// with its own gate. A clause gated on the mana spent to cast the spell that
+/// directly follows another such clause ("<A> if {R} was spent to cast this
+/// spell, and <B> if {G} was spent to cast this spell", or the same as two
+/// sentences) is an independent instruction: its gate reads the spell's payment,
+/// never the previous clause's effect or gate. Stamp it with the independent
+/// OR-branch marker (`SiblingCondition::ReplicatedOrBranch` on a
+/// `SequentialSibling`) so it is still evaluated when the previous clause's gate
+/// is false.
+fn mark_independent_mana_spent_gates(defs: &mut [AbilityDefinition]) {
+    let mut previous_gated = false;
+    for def in defs {
+        let gated = def.condition.as_ref().is_some_and(is_mana_spent_gate);
+        if previous_gated && gated {
+            def.sub_link = SubAbilityLink::SequentialSibling;
+            def.sibling_condition = SiblingCondition::ReplicatedOrBranch;
+        }
+        previous_gated = gated;
+    }
 }
 
 pub(crate) fn assemble_effect_chain(ir: &EffectChainIr) -> AbilityDefinition {
@@ -3864,6 +3906,8 @@ pub(crate) fn assemble_effect_chain(ir: &EffectChainIr) -> AbilityDefinition {
     // `ChooseDamageSource` makes bare "it" in the lose-branch one-shot prevention
     // refer to the chosen source, not `SelfRef` (the instant on the stack).
     thread_chosen_damage_source_into_oneshot_effects(&mut defs);
+
+    mark_independent_mana_spent_gates(&mut defs);
 
     // Chain: last has no sub_ability, each earlier one chains to next.
     // When a def already has a sub_ability (e.g., TargetOnly with attached Explore),
