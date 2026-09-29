@@ -1923,6 +1923,15 @@ fn subject_anchored_optional_actor(
 
 /// CR 601.2c: a `Pump` whose target is its own declared target instance
 /// ("[up to one] [other] target creature gets +N/+M"), not an inherited anaphor.
+/// CR 601.2c: an instruction that publishes its moved objects and declares a
+/// player-chosen object target (not a context reference or the untyped `Any`).
+fn declares_published_object_target(effect: &Effect) -> bool {
+    publishes_tracked_set_from_resolution(effect)
+        && effect
+            .target_filter()
+            .is_some_and(|filter| !filter.is_context_ref() && !matches!(filter, TargetFilter::Any))
+}
+
 fn declares_pump_target(effect: &Effect) -> bool {
     matches!(
         effect,
@@ -3546,13 +3555,21 @@ pub(crate) fn assemble_effect_chain(ir: &EffectChainIr) -> AbilityDefinition {
                             );
                         }
                     }
-                } else if starts_with_plural_subject_anaphor(&source_text_lower) {
-                    // CR 608.2c: "They are 5/5 Elemental creatures …" after
-                    // publishing instructions (a multi-slot "return up to one
-                    // target A, up to one target B, …" list) names every object
-                    // they published, not only the last link's `ParentTarget`.
-                    // Only a grant binds the set; "They reveal their hand" is a
-                    // player subject and keeps its binding.
+                } else if starts_with_plural_subject_anaphor(&source_text_lower)
+                    && defs
+                        .iter()
+                        .filter(|def| declares_published_object_target(&def.effect))
+                        .count()
+                        >= 2
+                {
+                    // CR 608.2c + CR 601.2c: "They are 5/5 Elemental creatures …"
+                    // after two or more targeted publishing instructions (a
+                    // multi-slot "return up to one target A, up to one target B,
+                    // …" list) names every object those instances declared, not
+                    // only the last link's `ParentTarget`. A single mass
+                    // antecedent ("put a counter on each creature you control and
+                    // they gain …") keeps its binding, and only a grant binds the
+                    // set: "They reveal their hand" is a player subject.
                     for current in &mut current_defs {
                         if matches!(&*current.effect, Effect::GenericEffect { .. }) {
                             rewrite_parent_targets_to_tracked_set(&mut current.effect, false);
