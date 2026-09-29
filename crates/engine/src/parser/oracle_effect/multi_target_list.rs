@@ -18,8 +18,11 @@ use nom::Parser;
 use crate::parser::oracle_ir::ast::ParsedEffectClause;
 use crate::parser::oracle_nom::error::{OracleError, OracleResult};
 use crate::parser::oracle_nom::primitives as nom_primitives;
-use crate::parser::oracle_target::{parse_target_with_ctx, parse_zone_suffix};
-use crate::types::ability::{AbilityDefinition, AbilityKind, Effect, TargetFilter};
+use crate::parser::oracle_target::{parse_target_with_ctx, parse_word_bounded, parse_zone_suffix};
+use crate::types::ability::{
+    AbilityDefinition, AbilityKind, Effect, MultiTargetSpec, TargetFilter,
+};
+use crate::types::identifiers::TrackedSetId;
 
 use super::{parse_effect_clause_inner, ParseContext};
 
@@ -184,6 +187,12 @@ pub(super) fn try_split_multi_target_list(
         {
             return None;
         }
+        // The probe only proves the slot phrase parses as a target; an effect
+        // that lowers it to the untyped `Any` filter (a cast clause that drops
+        // the slot's type) would copy a broken slot into the chain.
+        if clause.effect.target_filter() == Some(&TargetFilter::Any) {
+            return None;
+        }
         links.push((clause, link_ctx.target_chooser));
     }
 
@@ -191,7 +200,10 @@ pub(super) fn try_split_multi_target_list(
     // keeps its announcer override.
     ctx.target_chooser = None;
     let mut primary = parse_effect_clause_inner(&bodies[0], ctx);
-    if matches!(primary.effect, Effect::Unimplemented { .. }) || primary.sub_ability.is_some() {
+    if matches!(primary.effect, Effect::Unimplemented { .. })
+        || primary.sub_ability.is_some()
+        || primary.effect.target_filter() == Some(&TargetFilter::Any)
+    {
         return None;
     }
     primary.sub_ability = links
@@ -205,4 +217,90 @@ pub(super) fn try_split_multi_target_list(
             Some(Box::new(def))
         });
     Some(primary)
+}
+
+/// True when `clause` is a multi-slot target list: a primary slot plus
+/// `sub_ability` links that each carry their own `multi_target` cardinality —
+/// the representation both this splitter and `try_split_targeted_compound`
+/// produce. Evaluated on the clause as parsed, before later sentences chain on.
+/// The head's cardinality lives on the chunk (`head_multi_target`) or, before
+/// it is lifted there, on the clause itself.
+pub(super) fn is_multi_slot_list(
+    head_multi_target: Option<&MultiTargetSpec>,
+    clause: &ParsedEffectClause,
+) -> bool {
+    fn every_link_is_a_slot(link: &AbilityDefinition) -> bool {
+        link.multi_target.is_some() && link.sub_ability.as_deref().is_none_or(every_link_is_a_slot)
+    }
+    (head_multi_target.is_some() || clause.multi_target.is_some())
+        && clause
+            .sub_ability
+            .as_deref()
+            .is_some_and(every_link_is_a_slot)
+}
+
+/// CR 608.2d: a "you may" printed before the list is one choice over the whole
+/// instruction. Per-link `optional` would let a player accept one slot and
+/// decline another, and the head alone cannot gate its links, so an optional
+/// list has no faithful lowering and fails closed.
+pub(super) fn fail_closed_optional_list(clause: &mut ParsedEffectClause, text: &str) {
+    clause.effect = Effect::unimplemented("multi_slot_list_optional", text);
+    clause.sub_ability = None;
+}
+
+/// A pronoun or demonstrative that names an earlier object: "they", "them",
+/// "their", "it", "its", "that <noun>", "those <noun>".
+fn back_reference(i: &str) -> OracleResult<'_, ()> {
+    alt((
+        value((), |i| parse_word_bounded(i, "they")),
+        value((), |i| parse_word_bounded(i, "them")),
+        value((), |i| parse_word_bounded(i, "their")),
+        value((), |i| parse_word_bounded(i, "it")),
+        value((), |i| parse_word_bounded(i, "its")),
+        value((), tag("that ")),
+        value((), tag("those ")),
+    ))
+    .parse(i)
+}
+
+/// CR 608.2c: A sentence following a multi-slot list that says "they"/"them"/
+/// "it"/"that card" names the objects of several slots. The chain's
+/// `ParentTarget` binds only to the immediately preceding link, so it would
+/// reach the last slot alone. A `GenericEffect` grant rebinds to the chain
+/// tracked set (`TrackedSet` id 0), which unifies the objects every earlier
+/// link published (`publish_tracked_set`). That set is chain-wide, so the
+/// rebind is only faithful when the list is the chain's sole producer
+/// (`list_is_sole_producer`); any other referencing clause has no union form, so
+/// it fails closed instead of acting on the last slot only.
+pub(super) fn bind_slot_back_reference(
+    clause: &mut ParsedEffectClause,
+    text: &str,
+    list_is_sole_producer: bool,
+) {
+    let lower = text.to_ascii_lowercase();
+    if nom_primitives::scan_split_at_phrase(&lower, back_reference).is_none() {
+        return;
+    }
+    if let (
+        true,
+        Effect::GenericEffect {
+            static_abilities, ..
+        },
+    ) = (list_is_sole_producer, &mut clause.effect)
+    {
+        let mut rebound = false;
+        for definition in static_abilities.iter_mut() {
+            if definition.affected == Some(TargetFilter::ParentTarget) {
+                definition.affected = Some(TargetFilter::TrackedSet {
+                    id: TrackedSetId(0),
+                });
+                rebound = true;
+            }
+        }
+        if rebound {
+            return;
+        }
+    }
+    clause.effect = Effect::unimplemented("multi_slot_list_back_reference", text);
+    clause.sub_ability = None;
 }

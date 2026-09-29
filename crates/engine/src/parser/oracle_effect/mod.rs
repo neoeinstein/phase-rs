@@ -41637,6 +41637,23 @@ pub(crate) fn parse_effect_chain_ir(
                 })
             );
 
+        // CR 601.2c + CR 608.2c + CR 608.2d: a multi-slot target list is one
+        // link per slot. A following "they"/"it" names the objects of all slots,
+        // not the last, and a shared "you may" has no per-link form.
+        let previous_is_list = builder.clauses().last().is_some_and(|previous| {
+            multi_target_list::is_multi_slot_list(previous.multi_target.as_ref(), &previous.parsed)
+        });
+        if previous_is_list {
+            multi_target_list::bind_slot_back_reference(
+                &mut clause,
+                normalized_text,
+                builder.clauses().len() == 1,
+            );
+        }
+        if is_optional && multi_target_list::is_multi_slot_list(multi_target.as_ref(), &clause) {
+            multi_target_list::fail_closed_optional_list(&mut clause, normalized_text);
+        }
+
         // CR 603.6 + CR 608.2k: A reflexive zone-change trigger body ("When a
         // creature is put onto the battlefield this way, it deals damage equal to
         // its power …" — Vivien's Invocation) refers to the object the trigger

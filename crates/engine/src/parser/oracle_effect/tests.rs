@@ -75070,3 +75070,203 @@ fn multi_target_list_shares_zone_and_destination_tail() {
         }
     }
 }
+
+/// CR 608.2c: "They" after a multi-slot list names the objects of every slot.
+/// The chain's `ParentTarget` binds only to the last link, so the grant rebinds
+/// to the chain tracked set (the union of every link's published objects).
+#[test]
+fn multi_slot_list_plural_back_reference_covers_every_slot() {
+    let def = parse_effect_chain(
+        "Return up to one target artifact card, up to one target land card, and up to one target creature card from your graveyard to the battlefield. They are 5/5 Elemental creatures in addition to their other types.",
+        AbilityKind::Spell,
+    );
+    let effects = collect_chain_effects(&def);
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|e| matches!(e, Effect::ChangeZone { .. }))
+            .count(),
+        3,
+        "one return per slot: {effects:?}"
+    );
+    let Some(Effect::GenericEffect {
+        static_abilities, ..
+    }) = effects.last().copied()
+    else {
+        panic!("the grant must close the chain: {effects:?}");
+    };
+    assert!(!static_abilities.is_empty());
+    for definition in static_abilities {
+        assert_eq!(
+            definition.affected,
+            Some(TargetFilter::TrackedSet {
+                id: crate::types::identifiers::TrackedSetId(0)
+            }),
+            "the grant must cover the union of all slots, not the last link's target"
+        );
+    }
+}
+
+/// CR 608.2c: a referencing clause with no union form fails closed instead of
+/// acting on the last slot alone; a following sentence that names nothing
+/// earlier leaves the list intact.
+#[test]
+fn multi_slot_list_unbindable_back_reference_is_an_honest_gap() {
+    let gap = parse_effect_chain(
+        "Destroy up to one target artifact and up to one target creature. Its controller gains 2 life.",
+        AbilityKind::Spell,
+    );
+    assert!(
+        collect_chain_effects(&gap)
+            .iter()
+            .any(|e| matches!(e, Effect::Unimplemented { .. })),
+        "an anaphor that cannot bind to every slot must not lower silently"
+    );
+
+    let clean = parse_effect_chain(
+        "Destroy up to one target artifact and up to one target creature. Draw a card.",
+        AbilityKind::Spell,
+    );
+    assert!(
+        !collect_chain_effects(&clean)
+            .iter()
+            .any(|e| matches!(e, Effect::Unimplemented { .. })),
+        "a sentence with no back-reference must not disturb the list"
+    );
+}
+
+/// CR 601.2c: a slot whose clause lowers to the untyped `Any` filter is not
+/// copied into the chain; the whole list declines to the single-clause path.
+#[test]
+fn multi_slot_list_declines_when_a_slot_lowers_to_any() {
+    let def = parse_effect_chain(
+        "Cast up to one target instant card and/or up to one target sorcery card from your graveyard without paying their mana costs.",
+        AbilityKind::Spell,
+    );
+    assert_eq!(
+        collect_chain_effects(&def)
+            .iter()
+            .filter(|e| matches!(e, Effect::CastFromZone { .. }))
+            .count(),
+        1,
+        "declined list must not fabricate a second cast link"
+    );
+}
+
+/// CR 608.2d: a printed "you may" is one choice over the whole list; per-link
+/// optionality would allow accepting one slot and declining another, so an
+/// optional list fails closed.
+#[test]
+fn multi_slot_list_shared_optional_is_an_honest_gap() {
+    let def = parse_effect_chain(
+        "You may return up to one target instant card and up to one target sorcery card from your graveyard to your hand.",
+        AbilityKind::Spell,
+    );
+    assert!(
+        collect_chain_effects(&def)
+            .iter()
+            .any(|e| matches!(e, Effect::Unimplemented { .. })),
+        "an optional list must not lower with a per-slot may"
+    );
+}
+
+/// CR 608.2c: the chain tracked set also holds earlier producers' objects, so a
+/// plural back-reference after a list that is not the chain's first instruction
+/// fails closed instead of animating the unrelated earlier object too.
+#[test]
+fn multi_slot_list_back_reference_after_an_earlier_producer_is_an_honest_gap() {
+    let def = parse_effect_chain(
+        "Return target creature card from your graveyard to the battlefield. Return up to one target artifact card and up to one target land card from your graveyard to the battlefield. They are 5/5 Elemental creatures in addition to their other types.",
+        AbilityKind::Spell,
+    );
+    assert!(
+        collect_chain_effects(&def)
+            .iter()
+            .any(|e| matches!(e, Effect::Unimplemented { .. })),
+        "the grant must not bind to the chain-wide tracked set"
+    );
+}
+
+/// CR 608.2c: "then do the same for A, B, and C" replays the antecedent once per
+/// listed subtype: the original plus one retyped clone per subtype.
+#[test]
+fn do_the_same_for_subtype_list_emits_one_retyped_clone_per_subtype() {
+    let def = parse_effect_chain(
+        "Return target Pirate card from your graveyard to your hand, then do the same for Vampire, Dinosaur, and Merfolk.",
+        AbilityKind::Spell,
+    );
+    let subtypes: Vec<Vec<TypeFilter>> = collect_chain_effects(&def)
+        .into_iter()
+        .map(|effect| {
+            let Effect::ChangeZone {
+                origin,
+                destination,
+                target,
+                ..
+            } = effect
+            else {
+                panic!("every link must be a ChangeZone: {effect:?}");
+            };
+            assert_eq!(*origin, Some(Zone::Graveyard));
+            assert_eq!(*destination, Zone::Hand);
+            typed_of(target).type_filters.clone()
+        })
+        .collect();
+    assert_eq!(
+        subtypes.len(),
+        4,
+        "original plus three clones: {subtypes:?}"
+    );
+    assert!(subtypes[0].contains(&TypeFilter::Subtype("Pirate".to_string())));
+    for (clone, expected) in subtypes[1..].iter().zip(["Vampire", "Dinosaur", "Merfolk"]) {
+        assert_eq!(clone, &vec![TypeFilter::Subtype(expected.to_string())]);
+    }
+}
+
+/// CR 608.2c: an antecedent with no `Typed` target has nothing to retype, so the
+/// clause must not replay it verbatim once per listed subtype.
+#[test]
+fn do_the_same_for_subtype_list_without_a_typed_antecedent_emits_no_copies() {
+    let def = parse_effect_chain(
+        "Draw a card, then do the same for Vampire, Dinosaur, and Merfolk.",
+        AbilityKind::Spell,
+    );
+    assert_eq!(
+        collect_chain_effects(&def)
+            .iter()
+            .filter(|e| matches!(e, Effect::Draw { .. }))
+            .count(),
+        1,
+        "the antecedent is not cloned when no substitution happened"
+    );
+}
+
+/// CR 608.2c + CR 109.2: in a trailing "if A or if B" chain a bare type gate binds
+/// to the effect's chosen target only when the effect declares one.
+#[test]
+fn trailing_or_if_type_gate_binds_to_target_only_for_a_targeting_effect() {
+    let mut ctx = ParseContext::default();
+    let (targeting, _) = conditions::strip_suffix_conditional(
+        "Destroy target nonland permanent if it's a creature or if {G}{W} was spent to cast this spell.",
+        &mut ctx,
+    );
+    let Some(AbilityCondition::Or { conditions }) = targeting else {
+        panic!("expected an Or disjunction");
+    };
+    assert!(matches!(
+        conditions[0],
+        AbilityCondition::TargetMatchesFilter { .. }
+    ));
+
+    let (untargeted, _) = conditions::strip_suffix_conditional(
+        "You gain 3 life if it's a creature or if {G}{W} was spent to cast this spell.",
+        &mut ctx,
+    );
+    let Some(AbilityCondition::Or { conditions }) = untargeted else {
+        panic!("expected an Or disjunction");
+    };
+    assert!(!matches!(
+        conditions[0],
+        AbilityCondition::TargetMatchesFilter { .. }
+    ));
+}

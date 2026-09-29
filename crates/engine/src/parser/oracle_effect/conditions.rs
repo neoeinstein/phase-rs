@@ -27,7 +27,7 @@ use super::super::oracle_util::{parse_comparison_suffix, parse_subtype, TextPair
 #[cfg(test)]
 use super::parse_effect_chain;
 use super::sequence::parse_dig_from_among;
-use super::{scan_contains_phrase, ParseContext};
+use super::{parse_effect_clause_inner, scan_contains_phrase, ParseContext};
 use crate::parser::oracle_ir::ast::{parsed_clause, ContinuationAst};
 use crate::parser::oracle_ir::context::TriggerZoneChangeProvenance;
 use crate::parser::oracle_ir::diagnostic::OracleDiagnostic;
@@ -4050,7 +4050,7 @@ pub(super) fn strip_suffix_conditional(
         // revealed card (`RevealedHasCardType` would never see the target).
         let condition = match condition {
             AbilityCondition::Or { conditions }
-                if nom_primitives::scan_contains(effect_prefix_lower, "target ") =>
+                if effect_has_declared_target(effect_prefix, ctx) =>
             {
                 AbilityCondition::Or {
                     conditions: conditions
@@ -4065,6 +4065,17 @@ pub(super) fn strip_suffix_conditional(
     }
 
     (None, text.to_string())
+}
+
+/// CR 115.1: True when the effect text lowers to an effect whose typed target
+/// filter is a player-chosen target (not a context reference or the untyped
+/// `Any` fallback). Parses on a throwaway context so the caller's is untouched.
+fn effect_has_declared_target(effect_text: &str, ctx: &ParseContext) -> bool {
+    let clause = parse_effect_clause_inner(effect_text, &mut ctx.clone_throwaway());
+    clause
+        .effect
+        .target_filter()
+        .is_some_and(|filter| !filter.is_context_ref() && !matches!(filter, TargetFilter::Any))
 }
 
 pub(super) fn parse_quantity_comparison(text: &str) -> Option<(Comparator, QuantityExpr)> {
