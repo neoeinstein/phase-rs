@@ -1265,45 +1265,11 @@ pub fn parse_target_with_syntax<'a>(
         ))
         .parse(after_target)
         {
-            if let Ok((object_tail, _)) = alt((
-                tag::<_, _, OracleError<'_>>(", and/or "),
-                tag(", and "),
-                tag(", or "),
-                tag(", "),
-            ))
-            .parse(after_player)
-            {
-                if starts_with_type_word(object_tail) {
-                    let mut combined = player_filter.clone();
-                    let mut leg_text = &text[lower.len() - object_tail.len()..];
-                    let mut merged_any = false;
-                    loop {
-                        let (leg, rest) = parse_type_phrase_folding_with_ctx(leg_text, ctx);
-                        if matches!(leg, TargetFilter::Any) {
-                            if merged_any {
-                                return (combined, leg_text, syntax);
-                            }
-                            break;
-                        }
-                        combined = merge_or_filters(combined, leg);
-                        merged_any = true;
-
-                        let rest_lower = rest.to_lowercase();
-                        let Ok((next_leg, _)) = alt((
-                            tag::<_, _, OracleError<'_>>(", and/or "),
-                            tag(", and "),
-                            tag(", or "),
-                            tag(", "),
-                        ))
-                        .parse(rest_lower.as_str()) else {
-                            return (combined, rest, syntax);
-                        };
-                        if !starts_with_type_word(next_leg) {
-                            return (combined, rest, syntax);
-                        }
-                        leg_text = &rest[rest_lower.len() - next_leg.len()..];
-                    }
-                }
+            let after_player_orig = &text[lower.len() - after_player.len()..];
+            let (combined, rest, _) =
+                parse_coordinated_target_tail(player_filter.clone(), after_player_orig, ctx);
+            if rest.len() != after_player_orig.len() {
+                return (combined, rest, syntax);
             }
             // CR 115.1 + CR 601.2c + CR 603.3d: a `who`-headed relative clause
             // narrows the PLAYER TARGET's legal domain, and every conjunct of it
@@ -1403,6 +1369,17 @@ pub fn parse_target_with_syntax<'a>(
         // — it pushes `IsCommander` and composes uniformly with the existing
         // suffix machinery (ownership, control, counters, "with X", etc.).
         let (filter, rest) = parse_type_phrase_folding_with_ctx(&text[target_offset..], ctx);
+        // CR 115.1: an object-headed coordinated list whose later leg is a
+        // player ("creature token, player, or planeswalker") is still one
+        // target slot. Extend only when a player leg actually appears, so
+        // player-free lists keep their ordinary type-phrase semantics.
+        let mut tentative_ctx = ctx.clone();
+        let (combined, extended_rest, saw_player) =
+            parse_coordinated_target_tail(filter.clone(), rest, &mut tentative_ctx);
+        if saw_player {
+            *ctx = tentative_ctx;
+            return (combined, extended_rest, syntax);
+        }
         let consumed_end = lower.len() - rest.len();
         return (
             scope_target_spell_phrase(filter, &lower[target_offset..consumed_end]),
@@ -4451,6 +4428,64 @@ fn starts_with_commander_word(text: &str) -> bool {
     alt((tag::<_, _, OracleError<'_>>("commanders"), tag("commander")))
         .parse(text)
         .is_ok_and(|(after, _)| after.is_empty() || after.starts_with([' ', ',', '.', ';']))
+}
+
+/// CR 115.1: a player leg of a coordinated target noun list — "player(s)" or
+/// "opponent(s)" at a word boundary.
+fn parse_coordinated_player_leg(input: &str) -> OracleResult<'_, TargetFilter> {
+    terminated(
+        alt((
+            value(
+                TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent)),
+                alt((tag("opponents"), tag("opponent"))),
+            ),
+            value(TargetFilter::Player, alt((tag("players"), tag("player")))),
+        )),
+        peek(not(satisfy(|c: char| c.is_alphanumeric() || c == '\''))),
+    )
+    .parse(input)
+}
+
+/// CR 115.1: Fold the remaining legs of a coordinated target noun list into
+/// `head`. Each leg after a `, and/or ` / `, and ` / `, or ` / `, ` separator
+/// is either a player leg or an object type phrase, in any position; all legs
+/// describe one target slot whose legal domain is their union. `rest` starts
+/// at the first separator. Returns the merged filter, the unconsumed text, and
+/// whether any player leg was merged.
+fn parse_coordinated_target_tail<'a>(
+    head: TargetFilter,
+    mut rest: &'a str,
+    ctx: &mut ParseContext,
+) -> (TargetFilter, &'a str, bool) {
+    let mut combined = head;
+    let mut saw_player = false;
+    loop {
+        let rest_lower = rest.to_lowercase();
+        let Ok((leg_lower, _)) = alt((
+            tag::<_, _, OracleError<'_>>(", and/or "),
+            tag(", and "),
+            tag(", or "),
+            tag(", "),
+        ))
+        .parse(rest_lower.as_str()) else {
+            return (combined, rest, saw_player);
+        };
+        let leg_text = &rest[rest_lower.len() - leg_lower.len()..];
+        if let Ok((after_leg, player_leg)) = parse_coordinated_player_leg(leg_lower) {
+            combined = merge_or_filters(combined, player_leg);
+            saw_player = true;
+            rest = &leg_text[leg_lower.len() - after_leg.len()..];
+        } else if starts_with_type_word(leg_lower) {
+            let (leg, after_leg) = parse_type_phrase_folding_with_ctx(leg_text, ctx);
+            if matches!(leg, TargetFilter::Any) {
+                return (combined, rest, saw_player);
+            }
+            combined = merge_or_filters(combined, leg);
+            rest = after_leg;
+        } else {
+            return (combined, rest, saw_player);
+        }
+    }
 }
 
 /// Guard: does text start with something `parse_type_phrase_folding` would recognize?
@@ -12197,6 +12232,65 @@ mod tests {
                 ],
             },
             "the player and both opponent-controlled object alternatives share one target slot"
+        );
+    }
+
+    #[test]
+    fn coordinated_target_player_leg_in_middle_is_kept() {
+        let (filter, rest) = parse_target("target creature token, player, or planeswalker.");
+
+        assert_eq!(rest, ".");
+        let TargetFilter::Or { filters } = filter else {
+            panic!("expected one Or slot, got {filter:?}");
+        };
+        assert_eq!(filters.len(), 3);
+        assert_eq!(filters[1], TargetFilter::Player);
+        assert!(matches!(&filters[2], TargetFilter::Typed(t)
+            if t.type_filters == vec![TypeFilter::Planeswalker]));
+    }
+
+    #[test]
+    fn coordinated_target_opponent_leg_last_is_kept() {
+        let (filter, rest) = parse_target("target artifact, creature, planeswalker, or opponent.");
+
+        assert_eq!(rest, ".");
+        let TargetFilter::Or { filters } = filter else {
+            panic!("expected one Or slot, got {filter:?}");
+        };
+        assert_eq!(filters.len(), 4);
+        assert_eq!(
+            filters[3],
+            TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent))
+        );
+    }
+
+    #[test]
+    fn coordinated_target_plural_and_or_player_leg_is_kept() {
+        let (filter, rest) = parse_target("target creatures, planeswalkers, and/or players.");
+
+        assert_eq!(rest, ".");
+        let TargetFilter::Or { filters } = filter else {
+            panic!("expected one Or slot, got {filter:?}");
+        };
+        assert_eq!(filters.len(), 3);
+        assert_eq!(filters[2], TargetFilter::Player);
+    }
+
+    #[test]
+    fn coordinated_target_without_player_leg_keeps_controller_qualifier() {
+        let (filter, rest) = parse_target("target artifact, creature, or land you control.");
+
+        assert_eq!(rest, ".");
+        let TargetFilter::Or { filters } = filter else {
+            panic!("expected one Or slot, got {filter:?}");
+        };
+        assert_eq!(filters.len(), 3);
+        assert!(
+            filters
+                .iter()
+                .all(|leg| matches!(leg, TargetFilter::Typed(t)
+                if t.controller == Some(ControllerRef::You))),
+            "every leg keeps the trailing controller qualifier: {filters:?}"
         );
     }
 
