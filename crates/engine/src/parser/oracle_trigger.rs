@@ -3820,8 +3820,12 @@ fn hoist_unless_pay_modifier(
     // effect parser (`parse_discard_unless_filter` in oracle_effect/imperative.rs)
     // encodes the unless-clause as a *type qualifier* on the mandatory discard,
     // not as an alternative cost on a different effect. Defer to that path.
-    let primary_is_discard = tag::<_, _, OracleError<'_>>("discard ")
-        .parse(lower[..unless_pos].trim_start())
+    // The unless-clause binds to the sentence that contains it, so test that
+    // sentence (`enclosing`), tolerating a leading "then" connective: in "draw
+    // two cards. Then discard two cards unless you discard ...", only the
+    // discard clause carries the alternative, and the draw stays unconditional.
+    let primary_is_discard = preceded(opt(tag::<_, _, OracleError<'_>>("then ")), tag("discard "))
+        .parse(enclosing.trim_start())
         .is_ok();
     if primary_is_discard
         && tag::<_, _, OracleError<'_>>("you discard ")

@@ -34692,3 +34692,29 @@ fn split_graveyard_origin_owner_axes() {
         );
     }
 }
+
+/// CR 608.2c: an "unless you discard a [filter] card" alternative binds to the
+/// discard clause that carries it, not to the whole trigger. The preceding
+/// unconditional clause ("draw two cards") must stay outside the unless, and the
+/// filter rides `Discard.unless_filter` exactly as it does for a spell.
+#[test]
+fn trailing_discard_unless_filter_binds_to_its_own_clause() {
+    use crate::types::ability::Effect;
+
+    let def = parse_trigger_line(
+        "When this creature enters, draw two cards. Then discard two cards unless you discard an artifact card.",
+        "Test Card",
+    );
+
+    assert_eq!(def.unless_pay, None, "unless must not be hoisted to the trigger");
+    let exec = def.execute.as_deref().expect("trigger execute body");
+    assert!(matches!(&*exec.effect, Effect::Draw { .. }));
+    let discard = exec.sub_ability.as_deref().expect("discard clause");
+    assert!(matches!(
+        &*discard.effect,
+        Effect::Discard {
+            unless_filter: Some(_),
+            ..
+        }
+    ));
+}
