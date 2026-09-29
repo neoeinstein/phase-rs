@@ -74797,3 +74797,59 @@ fn put_top_of_library_into_graveyard_stays_mill() {
         );
     }
 }
+
+/// CR 120.3 + CR 608.2f: "each A and each B" object-type lists name ONE set of
+/// damaged permanents; every leg must survive into the `DamageAll` filter.
+#[test]
+fn damage_all_each_object_type_list_unions_every_leg() {
+    for (text, expected) in [
+        (
+            "~ deals 3 damage to each creature and each planeswalker",
+            vec![TypeFilter::Creature, TypeFilter::Planeswalker],
+        ),
+        (
+            "~ deals 2 damage to each creature and each battle",
+            vec![TypeFilter::Creature, TypeFilter::Battle],
+        ),
+        (
+            "~ deals 2 damage to each artifact and each enchantment",
+            vec![TypeFilter::Artifact, TypeFilter::Enchantment],
+        ),
+    ] {
+        let e = parse_effect(text);
+        let Effect::DamageAll {
+            target: TargetFilter::Or { filters },
+            player_filter: None,
+            ..
+        } = &e
+        else {
+            panic!("{text}: expected DamageAll over an Or filter, got {e:?}");
+        };
+        let legs: Vec<_> = filters
+            .iter()
+            .map(|f| typed_of(f).type_filters.clone())
+            .collect();
+        assert_eq!(
+            legs,
+            expected.iter().map(|t| vec![t.clone()]).collect::<Vec<_>>(),
+            "{text}"
+        );
+    }
+}
+
+/// A three-leg object list keeps all legs, and a trailing "and each player"
+/// still lifts into `player_filter` rather than being folded as an object leg.
+#[test]
+fn damage_all_each_object_list_keeps_player_leg_separate() {
+    let e = parse_effect("~ deals 1 damage to each creature and each planeswalker and each player");
+    let Effect::DamageAll {
+        target: TargetFilter::Or { filters },
+        player_filter,
+        ..
+    } = &e
+    else {
+        panic!("expected DamageAll over an Or filter, got {e:?}");
+    };
+    assert_eq!(filters.len(), 2);
+    assert_eq!(*player_filter, Some(PlayerFilter::All));
+}

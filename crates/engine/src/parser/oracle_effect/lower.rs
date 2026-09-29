@@ -6596,6 +6596,45 @@ fn chosen_number_extremum_of(amount: &QuantityExpr) -> Option<AggregateFunction>
     }
 }
 
+/// CR 120.3 + CR 608.2f: fold trailing "and each <object type>" legs of a
+/// damage recipient list into one union filter — "each creature and each
+/// planeswalker" names ONE set of damaged permanents, not a creature set with an
+/// ignored tail. A leg that is a player scope ("and each player") is left in the
+/// remainder for the caller's `player_filter` lift, and a leg that names no
+/// object type (a player-shaped `Typed` with empty `type_filters` matches every
+/// permanent) ends the fold.
+fn fold_each_object_legs<'a>(
+    filter: TargetFilter,
+    mut remainder: &'a str,
+    ctx: &mut ParseContext,
+) -> (TargetFilter, &'a str) {
+    let mut legs = vec![filter];
+    loop {
+        // allow-noncombinator: punctuation cleanup before the combinator dispatch below
+        let trimmed = remainder.trim_start_matches([',', ' ']);
+        let lower = trimmed.to_lowercase();
+        let Some(((), after_and)) = nom_on_lower(trimmed, &lower, |i| {
+            value((), terminated(tag("and "), peek(tag("each ")))).parse(i)
+        }) else {
+            break;
+        };
+        if parse_damage_each_player_scope(&after_and.to_lowercase()).is_some() {
+            break;
+        }
+        let (leg, rest) = parse_target_with_ctx(after_and, ctx);
+        let names_type = matches!(&leg, TargetFilter::Typed(tf) if !tf.type_filters.is_empty());
+        if !names_type {
+            break;
+        }
+        legs.push(leg);
+        remainder = rest;
+    }
+    match legs.len() {
+        1 => (legs.remove(0), remainder),
+        _ => (TargetFilter::Or { filters: legs }, remainder),
+    }
+}
+
 /// CR 102.2 + CR 102.3: leading "each opponent/player/foe/other opponent/other
 /// player" damage scope, returning the matched filter AND the unconsumed
 /// remainder. Unlike `parse_damage_each_player_scope` it is NOT all-consuming —
@@ -9398,6 +9437,7 @@ pub(super) fn try_parse_damage_with_remainder<'a>(
                     }
                     let (filter, remainder) = parse_target_with_ctx(target_phrase, ctx);
                     let (filter, remainder) = refine_damage_target_remainder(filter, remainder);
+                    let (filter, remainder) = fold_each_object_legs(filter, remainder, ctx);
                     // CR 119.2 + CR 120.3: "[N] damage to each creature and each
                     // player" — composite scope. The "each creature" parse
                     // captures the object filter; the trailing "and each player"
@@ -9661,6 +9701,7 @@ pub(super) fn try_parse_damage_with_remainder<'a>(
         }
         let (target, rem) = parse_target_with_ctx(after_to_for_classification, ctx);
         let (target, rem) = refine_damage_target_remainder(target, rem);
+        let (target, rem) = fold_each_object_legs(target, rem, ctx);
         // CR 119.2 + CR 120.3: Composite "each <object> and each <player>"
         // (Chandra's Ignition: "to each other creature and each opponent"). The
         // object filter is captured above; if the remainder begins with
