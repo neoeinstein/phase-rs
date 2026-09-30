@@ -7033,10 +7033,8 @@ fn parse_normalized_oracle_ir(
             // A "dealt by target <source>" prevention that cannot lower faithfully
             // stays on this route as its gap: falling through would let Priority 8
             // read it as a blanket, card-wide prevention replacement.
-            let is_dealt_by_target_gap = matches!(
-                &*lowered.effect,
-                Effect::Unimplemented { name, .. } if name == PREVENT_DEALT_BY_TARGET_GAP
-            );
+            let is_dealt_by_target_gap =
+                any_unimplemented(&lowered, &|name| name == PREVENT_DEALT_BY_TARGET_GAP);
             if !has_unimplemented(&lowered) || is_dealt_by_target_gap {
                 emitter.ability_ir_at(item_line, ir);
                 i += 1;
@@ -12109,7 +12107,14 @@ pub(super) fn lower_unsupported_node(
 /// and wildcard-free, a newly added definition-carrying `Effect` variant is now
 /// a compile error there rather than a silent miss here.
 pub(super) fn has_unimplemented(def: &AbilityDefinition) -> bool {
-    if matches!(*def.effect, Effect::Unimplemented { .. }) {
+    any_unimplemented(def, &|_| true)
+}
+
+/// True when any `Effect::Unimplemented` reachable from `def` (root, nested
+/// definitions, `sub_ability`, `else_ability`) has a gap `name` accepted by
+/// `matches_name`. `has_unimplemented` is the accept-everything instance.
+fn any_unimplemented(def: &AbilityDefinition, matches_name: &dyn Fn(&str) -> bool) -> bool {
+    if matches!(&*def.effect, Effect::Unimplemented { name, .. } if matches_name(name)) {
         return true;
     }
     // `||` rather than `|=`: once a nested failure is found the remaining
@@ -12117,11 +12122,18 @@ pub(super) fn has_unimplemented(def: &AbilityDefinition) -> bool {
     // walk the `.any()`/`||` chain it replaced was.
     let mut nested_has_unimplemented = false;
     def.effect.for_each_nested_definition(&mut |_, nested| {
-        nested_has_unimplemented = nested_has_unimplemented || has_unimplemented(nested);
+        nested_has_unimplemented =
+            nested_has_unimplemented || any_unimplemented(nested, matches_name);
     });
     nested_has_unimplemented
-        || def.sub_ability.as_deref().is_some_and(has_unimplemented)
-        || def.else_ability.as_deref().is_some_and(has_unimplemented)
+        || def
+            .sub_ability
+            .as_deref()
+            .is_some_and(|d| any_unimplemented(d, matches_name))
+        || def
+            .else_ability
+            .as_deref()
+            .is_some_and(|d| any_unimplemented(d, matches_name))
 }
 
 /// Parse an activated-ability effect chain with self-reference fallback.

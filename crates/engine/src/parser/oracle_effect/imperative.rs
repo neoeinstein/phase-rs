@@ -10007,8 +10007,11 @@ fn lower_change_zone_all_to_library(origins: Vec<Zone>) -> ParsedEffectClause {
 /// CR 301.5 + CR 303.4: an unconsumed " attached to <object>" qualifier after a
 /// target phrase ("all Equipment attached to that creature"). The target filter
 /// cannot express the relation, so dropping it would widen the population to
-/// every such permanent; the caller fails closed instead.
-fn opens_attachment_qualifier(remainder: &str) -> bool {
+/// every such permanent; the caller fails closed instead. Shared by the
+/// single-verb destroy parser and the compound-leg splitter
+/// (`try_split_targeted_compound`), which covers every verb that carries a
+/// "<verb> target X and all Auras attached to it" leg (bounce, exile, ...).
+pub(super) fn opens_attachment_qualifier(remainder: &str) -> bool {
     tag::<_, _, OracleError<'_>>(" attached to ")
         .parse(remainder)
         .is_ok()

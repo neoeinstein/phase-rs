@@ -77403,3 +77403,143 @@ fn prevent_dealt_by_target_spell_line_never_becomes_a_blanket_replacement() {
         lowered.abilities[0].effect
     );
 }
+
+/// CR 615 + CR 609.7: the fail-closed "dealt by target creature" gap is found
+/// wherever it sits in a spell line's chain, not only at the root. Read from the
+/// chain root alone, a gap in a later clause let the line fall through to the
+/// replacement priority, which reads it as a blanket prevention (a Fog).
+/// Paired positive: the same second clause with a qualified source lowers, and
+/// the chain has no gap.
+#[test]
+fn prevent_dealt_by_target_gap_in_later_clause_never_becomes_a_blanket_replacement() {
+    let parse = |text: &str| {
+        parse_oracle_text(text, "Prevention Probe", &[], &["Instant".to_string()], &[])
+    };
+
+    let closed = parse(
+        "Target creature gets +1/+1 until end of turn. Prevent all combat damage that would be dealt by target creature this turn.",
+    );
+    assert!(
+        closed.replacements.is_empty(),
+        "no blanket replacement: {:#?}",
+        closed.replacements
+    );
+    assert_eq!(
+        closed.abilities.len(),
+        1,
+        "the line stays one spell ability"
+    );
+    assert!(
+        chain_any(&closed.abilities[0], &|d| matches!(
+            &*d.effect,
+            Effect::Unimplemented { name, .. } if name == "prevent_damage_dealt_by_target"
+        )),
+        "the gap stays in the chain: {:#?}",
+        closed.abilities[0]
+    );
+
+    let lowered = parse(
+        "Target creature gets +1/+1 until end of turn. Prevent all combat damage that would be dealt by target attacking creature this turn.",
+    );
+    assert!(
+        lowered.replacements.is_empty(),
+        "{:#?}",
+        lowered.replacements
+    );
+    assert!(
+        chain_any(&lowered.abilities[0], &|d| matches!(
+            &*d.effect,
+            Effect::PreventDamage {
+                damage_source_filter: Some(_),
+                ..
+            }
+        )),
+        "{:#?}",
+        lowered.abilities[0]
+    );
+    assert!(
+        !chain_has_unimplemented(&lowered.abilities[0]),
+        "{:#?}",
+        lowered.abilities[0]
+    );
+}
+
+/// CR 601.2c + CR 608.2c + CR 615: the "by" half of "dealt to and dealt by
+/// <object>" shields the SAME object the "to" half does. A declared "target
+/// <X>" recipient is chosen once, so the "by" half reads it through
+/// `ParentTarget`; restating the declared filter would shield every object it
+/// matches. Covers the declared class (controller-scoped creature, opponent's
+/// permanent) and the anaphoric Maze of Ith form, which binds identically.
+#[test]
+fn bidirectional_prevent_binds_the_by_half_to_the_chosen_object() {
+    let by_source_filters = |def: &AbilityDefinition| {
+        std::iter::successors(Some(def), |node| node.sub_ability.as_deref())
+            .filter_map(|node| match &*node.effect {
+                Effect::PreventDamage {
+                    damage_source_filter: Some(filter),
+                    ..
+                } => Some(filter.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    for text in [
+        "Prevent all combat damage that would be dealt to and dealt by target creature you control this turn.",
+        "Prevent all damage that would be dealt to and dealt by target permanent an opponent controls this turn.",
+        "Untap target attacking creature. Prevent all combat damage that would be dealt to and dealt by that creature this turn.",
+    ] {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        assert!(
+            !chain_has_unimplemented(&def),
+            "{text}: reach guard, the form must lower: {def:#?}"
+        );
+        assert_eq!(
+            by_source_filters(&def),
+            vec![TargetFilter::ParentTarget],
+            "{text}: the by half binds the chosen object"
+        );
+    }
+}
+
+/// CR 301.5 + CR 303.4: a mass leg qualified by "attached to <object>" names
+/// the attachments of the primary object. No filter expresses that relation, so
+/// it must fail closed for every verb, not widen to every Aura/Equipment on the
+/// battlefield. Paired positive: the same legs without the qualifier lower.
+#[test]
+fn attached_to_mass_leg_fails_closed_for_every_verb() {
+    for text in [
+        "Destroy target creature and all Equipment attached to it.",
+        "Return target creature and all Auras attached to it to their owners' hands.",
+        "Return target creature you control and all Auras you control attached to it to their owner's hand.",
+        "Return target creature and each Aura attached to it to their owners' hands.",
+        "Exile target attacking creature and all Equipment attached to it.",
+    ] {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        assert!(
+            chain_any(&def, &|d| matches!(
+                &*d.effect,
+                Effect::Unimplemented { name, .. } if name == "attached_to_qualifier"
+            )) || chain_has_unimplemented(&def),
+            "{text}: must fail closed, got {def:#?}"
+        );
+        assert!(
+            !chain_any(&def, &|d| matches!(
+                &*d.effect,
+                Effect::BounceAll { .. } | Effect::ChangeZoneAll { .. } | Effect::DestroyAll { .. }
+            )),
+            "{text}: no unrestricted mass leg: {def:#?}"
+        );
+    }
+
+    for text in [
+        "Return target creature and all Auras to their owners' hands.",
+        "Exile target creature and all Equipment.",
+    ] {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        assert!(
+            !chain_has_unimplemented(&def),
+            "{text}: reach guard, the unqualified leg must lower: {def:#?}"
+        );
+    }
+}

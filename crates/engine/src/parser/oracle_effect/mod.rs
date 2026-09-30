@@ -20350,6 +20350,29 @@ fn try_parse_reanimate_self_and_target(
     })
 }
 
+/// Gap name for a mass leg whose "attached to <object>" relation is unmodelled.
+const ATTACHED_TO_QUALIFIER_GAP: &str = "attached_to_qualifier";
+
+/// True when `sub_text` is an `all`/`each` mass leg whose target phrase is
+/// followed by an unconsumed " attached to <object>" qualifier
+/// (`imperative::opens_attachment_qualifier` is the single recognizer).
+fn mass_leg_opens_attachment_qualifier(
+    sub_lower: &str,
+    sub_text: &str,
+    ctx: &ParseContext,
+) -> bool {
+    let Ok((after_quantifier, _)) = alt((
+        tag::<_, _, OracleError<'_>>("all "),
+        tag::<_, _, OracleError<'_>>("each "),
+    ))
+    .parse(sub_lower) else {
+        return false;
+    };
+    let noun_text = &sub_text[sub_text.len() - after_quantifier.len()..];
+    let (_, rem) = parse_target_with_ctx(noun_text, &mut ctx.clone_throwaway());
+    imperative::opens_attachment_qualifier(rem)
+}
+
 /// CR 608.2c: Split compound targeted actions like "tap target creature and put a stun
 /// counter on it" into a primary effect (Tap) with a sub_ability chain (PutCounter with
 /// ParentTarget). Instructions in a spell are followed in order; each " and "-connected
@@ -20693,6 +20716,15 @@ fn try_split_targeted_compound(text: &str, ctx: &mut ParseContext) -> Option<Par
                 sub_clause = reparsed;
             }
         }
+    }
+
+    // CR 301.5 + CR 303.4: a mass leg qualified by an attachment relation ("and
+    // all Auras attached to it") names the Auras/Equipment attached to the
+    // primary object. No `TargetFilter` expresses that relation, so the
+    // carry-forward reparses above lower the leg to an unrestricted mass effect
+    // over EVERY such permanent. Fail closed instead of widening the population.
+    if mass_leg_opens_attachment_qualifier(&sub_lower, sub_text, &continuation_ctx) {
+        sub_clause = parsed_clause(Effect::unimplemented(ATTACHED_TO_QUALIFIER_GAP, sub_text));
     }
 
     // If the remainder contains anaphoric references ("it", "that creature", "them"),

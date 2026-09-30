@@ -16,6 +16,7 @@ use super::super::oracle_nom::enters_under::{
 use super::super::oracle_nom::error::{oracle_err, OracleError, OracleResult};
 use super::super::oracle_nom::primitives as nom_primitives;
 use super::super::oracle_nom::quantity as nom_quantity;
+use super::super::oracle_nom::target::parse_declared_target_prefix;
 use super::super::oracle_quantity::{
     parse_cda_quantity, parse_cda_quantity_with_context, parse_event_context_quantity,
     parse_for_each_clause, parse_for_each_clause_expr, parse_for_each_clause_expr_with_context,
@@ -9179,6 +9180,19 @@ pub(super) fn try_parse_bidirectional_prevent(
         prevention_duration: prevention_duration.clone(),
     };
 
+    // CR 601.2c + CR 608.2c: a declared "target <X>" recipient is chosen once,
+    // when the ability is put on the stack. The "by" half names that SAME
+    // object, so it reads the chain's chosen target via `ParentTarget` instead
+    // of re-stating the declared filter, which would shield every object the
+    // filter matches ("dealt by target creature you control" is one creature,
+    // not all of them). An anaphoric or mass recipient is already the filter
+    // to use as written.
+    let by_source_filter = if parse_declared_target_prefix(anaphor_tp.lower).is_ok() {
+        TargetFilter::ParentTarget
+    } else {
+        anaphor_filter
+    };
+
     // CR 615: the source-only ("by") shield — scoped to the chosen creature as
     // the damage SOURCE (target: Any, damage_source_filter: ParentTarget). A
     // SequentialSibling: an independent following instruction in the same
@@ -9190,7 +9204,7 @@ pub(super) fn try_parse_bidirectional_prevent(
             amount_dynamic: None,
             target: TargetFilter::Any,
             scope,
-            damage_source_filter: Some(anaphor_filter),
+            damage_source_filter: Some(by_source_filter),
             prevention_duration,
         },
     );
