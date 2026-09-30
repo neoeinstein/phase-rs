@@ -77465,11 +77465,12 @@ fn prevent_dealt_by_target_gap_in_later_clause_never_becomes_a_blanket_replaceme
 }
 
 /// CR 601.2c + CR 608.2c + CR 615: the "by" half of "dealt to and dealt by
-/// <object>" shields the SAME object the "to" half does. A declared "target
-/// <X>" recipient is chosen once, so the "by" half reads it through
-/// `ParentTarget`; restating the declared filter would shield every object it
-/// matches. Covers the declared class (controller-scoped creature, opponent's
-/// permanent) and the anaphoric Maze of Ith form, which binds identically.
+/// <object>" shields the SAME object the "to" half does. An anaphoric recipient
+/// (Maze of Ith's "that creature") binds the "by" half to the chosen object via
+/// `ParentTarget`. A declared "target <X>" recipient cannot be scoped: it lowers
+/// to the same `Typed` filter as a mass recipient, so the hosted "to" shield
+/// would cover every matching object. That form fails closed (Cephalid
+/// Illusionist, Soratami Cloud Chariot, Kiora, Dovin).
 #[test]
 fn bidirectional_prevent_binds_the_by_half_to_the_chosen_object() {
     let by_source_filters = |def: &AbilityDefinition| {
@@ -77484,20 +77485,29 @@ fn bidirectional_prevent_binds_the_by_half_to_the_chosen_object() {
             .collect::<Vec<_>>()
     };
 
+    let text = "Untap target attacking creature. Prevent all combat damage that would be dealt to and dealt by that creature this turn.";
+    let def = parse_effect_chain(text, AbilityKind::Spell);
+    assert!(
+        !chain_has_unimplemented(&def),
+        "{text}: reach guard, the form must lower: {def:#?}"
+    );
+    assert_eq!(
+        by_source_filters(&def),
+        vec![TargetFilter::ParentTarget],
+        "{text}: the by half binds the chosen object"
+    );
+
     for text in [
         "Prevent all combat damage that would be dealt to and dealt by target creature you control this turn.",
         "Prevent all damage that would be dealt to and dealt by target permanent an opponent controls this turn.",
-        "Untap target attacking creature. Prevent all combat damage that would be dealt to and dealt by that creature this turn.",
     ] {
         let def = parse_effect_chain(text, AbilityKind::Spell);
         assert!(
-            !chain_has_unimplemented(&def),
-            "{text}: reach guard, the form must lower: {def:#?}"
-        );
-        assert_eq!(
-            by_source_filters(&def),
-            vec![TargetFilter::ParentTarget],
-            "{text}: the by half binds the chosen object"
+            chain_any(&def, &|d| matches!(
+                &*d.effect,
+                Effect::Unimplemented { name, .. } if name == "bidirectional_prevent_declared_target"
+            )),
+            "{text}: the declared form must fail closed, got {def:#?}"
         );
     }
 }

@@ -9181,17 +9181,18 @@ pub(super) fn try_parse_bidirectional_prevent(
     };
 
     // CR 601.2c + CR 608.2c: a declared "target <X>" recipient is chosen once,
-    // when the ability is put on the stack. The "by" half names that SAME
-    // object, so it reads the chain's chosen target via `ParentTarget` instead
-    // of re-stating the declared filter, which would shield every object the
-    // filter matches ("dealt by target creature you control" is one creature,
-    // not all of them). An anaphoric or mass recipient is already the filter
-    // to use as written.
-    let by_source_filter = if parse_declared_target_prefix(anaphor_tp.lower).is_ok() {
-        TargetFilter::ParentTarget
-    } else {
-        anaphor_filter
-    };
+    // when the ability is put on the stack, and both halves must be scoped to
+    // that one object. The resolver cannot scope the "to" half to it: a declared
+    // recipient ("target creature you control") and a mass recipient ("creatures
+    // you control") lower to the same `Typed` filter, and the hosted shield keeps
+    // that filter as `valid_card`, so it would shield every object the filter
+    // matches. Fail closed until the declared form has its own representation.
+    if parse_declared_target_prefix(anaphor_tp.lower).is_ok() {
+        return Some(parsed_clause(Effect::unimplemented(
+            "bidirectional_prevent_declared_target",
+            text,
+        )));
+    }
 
     // CR 615: the source-only ("by") shield — scoped to the chosen creature as
     // the damage SOURCE (target: Any, damage_source_filter: ParentTarget). A
@@ -9204,7 +9205,7 @@ pub(super) fn try_parse_bidirectional_prevent(
             amount_dynamic: None,
             target: TargetFilter::Any,
             scope,
-            damage_source_filter: Some(by_source_filter),
+            damage_source_filter: Some(anaphor_filter),
             prevention_duration,
         },
     );

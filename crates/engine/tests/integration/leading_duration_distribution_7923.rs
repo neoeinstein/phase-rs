@@ -73,8 +73,12 @@ use engine::types::zones::Zone;
 // ---------------------------------------------------------------------------
 
 const XANATHAR: &str = "At the beginning of your upkeep, choose target opponent. Until end of turn, that player can't cast spells, you may look at the top card of their library any time, you may play the top card of their library, and you may spend mana as though it were mana of any color to cast spells this way.";
-const KIORA: &str = "[+1]: Until your next turn, prevent all damage that would be dealt to and dealt by target permanent an opponent controls.\n[−1]: Draw a card. You may play an additional land this turn.\n[−5]: You get an emblem with \"At the beginning of your end step, create a 9/9 blue Kraken creature token.\"";
-const DOVIN: &str = "Artifact, instant, and sorcery spells your opponents cast cost {1} more to cast.\n[−1]: Until your next turn, prevent all damage that would be dealt to and dealt by target permanent an opponent controls.";
+/// Kiora's and Dovin's printed "dealt to and dealt by target permanent an
+/// opponent controls" is a declared recipient, which the engine cannot scope to
+/// the one chosen permanent and so fails closed. The anaphoric form ("that
+/// permanent", Maze of Ith's shape) lowers to the same two `PreventDamage` links
+/// under the same leading duration, so it carries this test's duration claim.
+const ANAPHORIC_BIDIRECTIONAL_PREVENT: &str = "[-1]: Untap target permanent an opponent controls. Until your next turn, prevent all damage that would be dealt to and dealt by that permanent.";
 const PRISONERS: &str = "Choose one —\n• Break Their Chains — Destroy target artifact.\n• Interrogate Them — Exile the top three cards of target opponent's library. Choose one of them. Until the end of your next turn, you may play that card, and you may spend mana as though it were mana of any color to cast it.";
 const AURELIA: &str = "Flying\nMentor (Whenever this creature attacks, put a +1/+1 counter on target attacking creature with lesser power.)\nAt the beginning of combat on your turn, choose up to one target creature you control. Until end of turn, that creature gets +2/+0, gains trample if it's red, and gains vigilance if it's white.";
 const GIANT_OYSTER: &str = "You may choose not to untap this creature during your untap step.\n{T}: For as long as this creature remains tapped, target tapped creature doesn't untap during its controller's untap step, and at the beginning of each of your draw steps, put a -1/-1 counter on that creature. When this creature leaves the battlefield or becomes untapped, remove all -1/-1 counters from the creature.";
@@ -666,10 +670,12 @@ fn temporal_aperture_unevaluable_inner_window_strict_fails() {
 /// FAILS AT BASE_SHA: there the sub node exports `duration: null`.
 #[test]
 fn kiora_prevention_sibling_carries_printed_window() {
-    for (name, text, subtype, ability_idx) in [
-        ("Kiora, the Crashing Wave", KIORA, "Kiora", 0usize),
-        ("Dovin, Hand of Control", DOVIN, "Dovin", 0usize),
-    ] {
+    for (name, text, subtype, ability_idx) in [(
+        "Anaphoric bidirectional prevent",
+        ANAPHORIC_BIDIRECTIONAL_PREVENT,
+        "Test",
+        0usize,
+    )] {
         let parsed = parse_oracle_text(
             text,
             name,

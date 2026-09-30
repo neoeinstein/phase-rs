@@ -1,60 +1,41 @@
-//! "Prevent all combat damage that would be dealt to and dealt by target
-//! creature you control this turn" (Cephalid Illusionist, Soratami Cloud
-//! Chariot), driven through the real activation + combat pipeline.
+//! "Prevent all [combat] damage that would be dealt to and dealt by target
+//! <object> this turn" (Cephalid Illusionist, Soratami Cloud Chariot, Kiora the
+//! Crashing Wave, Dovin Hand of Control) must not report as supported while the
+//! engine cannot scope both halves to the one chosen object.
 //!
-//! The "by" half must shield only the creature chosen as the target, not every
-//! creature the declared filter ("creature you control") matches.
+//! A declared recipient and a mass recipient ("creatures you control") lower to
+//! the same `Typed` filter, and the hosted "to" shield keeps that filter as
+//! `valid_card`, so it would shield every matching object. The declared form
+//! therefore fails closed; the anaphoric form (Maze of Ith) stays supported.
 //!
 //! CR 601.2c + CR 608.2c + CR 615.1a.
 
-use engine::game::combat::AttackTarget;
-use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
-use engine::types::identifiers::ObjectId;
-use engine::types::phase::Phase;
+use engine::parser::oracle::parse_oracle_text;
+use engine::types::ability::Effect;
 
-const SHIELD: &str = "{T}: Prevent all combat damage that would be dealt to and dealt by target creature you control this turn.";
+const DECLARED: &[(&str, &str)] = &[
+    (
+        "Cephalid Illusionist",
+        "{2}{U}, {T}: Prevent all combat damage that would be dealt to and dealt by target creature you control this turn.",
+    ),
+    (
+        "Kiora, the Crashing Wave",
+        "[+1]: Until your next turn, prevent all damage that would be dealt to and dealt by target permanent an opponent controls.",
+    ),
+];
 
-fn damage_marked(runner: &GameRunner, obj: ObjectId) -> u32 {
-    runner.state().objects[&obj].damage_marked
-}
-
-/// The chosen attacker deals no combat damage to its blocker and takes none from
-/// it; a second attacker of the same controller, matching the same declared
-/// filter, still deals its damage.
 #[test]
-fn declared_target_shield_covers_only_the_chosen_creature_in_both_directions() {
-    let mut scenario = GameScenario::new();
-    scenario.at_phase(Phase::PreCombatMain);
-    let source = scenario
-        .add_land_from_oracle(P0, "Shield Source", SHIELD)
-        .id();
-    let chosen = scenario.add_creature(P0, "Chosen Attacker", 2, 3).id();
-    let chosen_blocker = scenario.add_creature(P1, "Chosen Blocker", 2, 3).id();
-    let other = scenario.add_creature(P0, "Other Attacker", 2, 3).id();
-    let other_blocker = scenario.add_creature(P1, "Other Blocker", 2, 3).id();
-
-    let mut runner = scenario.build();
-    runner.advance_to_combat();
-    runner
-        .declare_attackers(&[
-            (chosen, AttackTarget::Player(P1)),
-            (other, AttackTarget::Player(P1)),
-        ])
-        .expect("declaring both attackers must be accepted");
-    runner.activate(source, 0).target_object(chosen).resolve();
-    runner.pass_both_players();
-    runner
-        .declare_blockers(&[(chosen_blocker, chosen), (other_blocker, other)])
-        .expect("declaring both blocks must be accepted");
-    runner.combat_damage();
-
-    assert_eq!(damage_marked(&runner, chosen), 0, "'to' half");
-    assert_eq!(damage_marked(&runner, chosen_blocker), 0, "'by' half");
-    // Reach guard: the same declared filter matches `other`, whose damage to its
-    // blocker must still be dealt (the "by" half is not shared across the filter).
-    assert_eq!(
-        damage_marked(&runner, other_blocker),
-        2,
-        "'by' half is scoped"
-    );
+fn declared_target_bidirectional_prevent_is_unsupported() {
+    for (name, oracle) in DECLARED {
+        let parsed = parse_oracle_text(oracle, name, &[], &[], &[]);
+        let ability = parsed
+            .abilities
+            .first()
+            .unwrap_or_else(|| panic!("{name}: expected an ability"));
+        assert!(
+            matches!(&*ability.effect, Effect::Unimplemented { name, .. } if name == "bidirectional_prevent_declared_target"),
+            "{name}: expected the declared bidirectional form to fail closed, got {:?}",
+            ability.effect
+        );
+    }
 }
