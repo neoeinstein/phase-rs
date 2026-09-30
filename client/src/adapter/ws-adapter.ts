@@ -210,14 +210,17 @@ export class NativeEngineVersionMismatchError extends Error {
  * `crates/server-core/src/protocol.rs`. Bump in lockstep when either side
  * adds, removes, renames, or changes the type of a protocol variant field.
  *
- * 93 — FilterProp.Unblocked is reshaped to FilterProp.BlockStatus { status:
+ * 94 — FilterProp.Unblocked is reshaped to FilterProp.BlockStatus { status:
  *      AttackerBlockStatus } (Blocked | Unblocked), so "blocked creature"
  *      filters (CR 509.1h: an attacking creature stays blocked for the rest of
  *      combat once blocked) are expressible. The legacy "Unblocked" tag still
- *      deserializes via a serde alias with a defaulted status, but a v92 peer
+ *      deserializes via a serde alias with a defaulted status, but a v93 peer
  *      cannot parse the new "BlockStatus" tag carried in GameState ability
- *      definitions. Full-game peers and P2P move in lockstep (wire 75); lobby
+ *      definitions. Full-game peers and P2P move in lockstep (wire 76); lobby
  *      messages are unchanged.
+ * 93 — ReductionProvenance gains SacrificedForCost, the reduction an Emerge
+ *      or Offering sacrifice earns before a deferred target declaration. A
+ *      v92 peer cannot deserialize it. P2P moves in lockstep to wire 75.
  * 92 — ResolvedAbility.parent_target_missing_reason is serialized and
  *      ParentTargetMissingReason gains RevealUntil (CR 701.20a + CR 603.12),
  *      the reveal-until whiff verdict read by the new
@@ -631,7 +634,7 @@ export class NativeEngineVersionMismatchError extends Error {
  *      every spell frame is byte-identical to v78.
  *
  */
-export const PROTOCOL_VERSION = 93;
+export const PROTOCOL_VERSION = 94;
 
 /**
  * Lowest server protocol version this client will accept in the handshake.
