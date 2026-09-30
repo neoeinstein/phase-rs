@@ -655,6 +655,18 @@ fn double_triggers_while_condition_is_attached() {
         "If a triggered ability of a creature you control triggers while the moon is full, that ability triggers an additional time.",
     )
     .is_none());
+    // A gate whose continuation is not ", that ability trigger…" (Roaming
+    // Throne's "it triggers an additional time") cannot be anchored; it declines
+    // instead of dropping the printed "while" clause into an unconditional
+    // doubler. The ungated "it triggers" spelling stays a paired positive.
+    assert!(parse_static_line(
+        "If a triggered ability of a creature you control triggers while you control three or more creatures, it triggers an additional time.",
+    )
+    .is_none());
+    assert!(parse_static_line(
+        "If a triggered ability of a creature you control triggers, it triggers an additional time.",
+    )
+    .is_some());
     // The gate runs up to the doubler's own continuation, so a condition that
     // contains a comma is not truncated at its first ", " into a weaker gate:
     // the whole text is judged, and an unparseable whole declines.

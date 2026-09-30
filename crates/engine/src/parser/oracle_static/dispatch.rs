@@ -3879,20 +3879,22 @@ pub(crate) fn parse_static_line_inner(
         // Shrines") gates the doubling on a game-state condition, evaluated live
         // by `active_static_definitions`. `parse_static_condition` delegates to
         // `parse_inner_condition`, the single condition authority.
-        if let Some((_, condition_text, _)) = nom_primitives::scan_preceded(tp.lower, |i| {
-            preceded(
-                tag::<_, _, OracleError<'_>>("triggers while "),
-                // Anchor on the doubler's own continuation so a condition that
-                // itself contains a comma is not cut at its first ", ".
-                terminated(
-                    take_until(", that ability trigger"),
-                    tag(", that ability trigger"),
-                ),
-            )
-            .parse(i)
-        }) {
-            // An unparseable gate must not degrade to an unconditional doubler:
-            // decline so the line stays a flagged gap.
+        if nom_primitives::scan_contains(tp.lower, "triggers while ") {
+            // A printed gate whose continuation is not the doubler's own must not
+            // degrade to an unconditional doubler: decline so the line stays a
+            // flagged gap.
+            let (_, condition_text, _) = nom_primitives::scan_preceded(tp.lower, |i| {
+                preceded(
+                    tag::<_, _, OracleError<'_>>("triggers while "),
+                    // Anchor on the doubler's own continuation so a condition that
+                    // itself contains a comma is not cut at its first ", ".
+                    terminated(
+                        take_until(", that ability trigger"),
+                        tag(", that ability trigger"),
+                    ),
+                )
+                .parse(i)
+            })?;
             def.condition = Some(parse_static_condition(condition_text)?);
         }
         return Some(def);

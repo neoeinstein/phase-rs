@@ -656,87 +656,73 @@ fn temporal_aperture_unevaluable_inner_window_strict_fails() {
 /// `GainActivatedAbilitiesOfTarget` arm), so no guard can rescue it. Both halves are asserted here, so
 /// an added arm turns this test red.
 ///
-/// **SCOPE — THIS TEST MAKES NO RUNTIME CLAIM, DELIBERATELY.** Measured at
-/// BASE_SHA: both of Kiora's prevention shields are hosted on the TARGET OBJECT's
-/// live `replacement_definitions` with `base_replacement_definitions` empty, and
-/// CR 613.1's top-of-pass reset (`layers.rs::seed_live_characteristics_from_base`)
-/// discards BOTH — before the activation turn's own combat damage, and again
-/// across the turn boundary (live 2 → 0; the opponent's 3/3 still deals its full
-/// 3, identical to a paired no-activation control). Neither half survives; they go
-/// together. That observation gap is a SEPARATE, PRE-EXISTING defect this PR does
-/// not touch (`prevent_damage.rs`'s own comment already names it). This change puts
-/// the right value on the right carrier; it cannot fix the flush.
-///
-/// FAILS AT BASE_SHA: there the sub node exports `duration: null`.
+/// **SCOPE — THIS TEST MAKES NO RUNTIME CLAIM, DELIBERATELY.** It pins the parsed
+/// shape only: the printed window rides both prevention links, on the carrier
+/// `prevent_damage::resolve` reads, never on the embedded field. Whether the
+/// resulting shields survive CR 613.1's top-of-pass reset is a separate question
+/// this test does not answer.
 #[test]
-fn kiora_prevention_sibling_carries_printed_window() {
-    for (name, text, subtype, ability_idx) in [(
-        "Anaphoric bidirectional prevent",
+fn anaphoric_bidirectional_prevent_sibling_carries_printed_window() {
+    let name = "Anaphoric bidirectional prevent";
+    let parsed = parse_oracle_text(
         ANAPHORIC_BIDIRECTIONAL_PREVENT,
-        "Test",
-        0usize,
-    )] {
-        let parsed = parse_oracle_text(
-            text,
-            name,
-            &[],
-            &["Legendary".to_string(), "Planeswalker".to_string()],
-            &[subtype.to_string()],
-        );
-        let head = &parsed.abilities[ability_idx];
-        let links = chain(head);
-        assert_no_unimplemented(&links, name);
+        name,
+        &[],
+        &["Legendary".to_string(), "Planeswalker".to_string()],
+        &["Test".to_string()],
+    );
+    let head = &parsed.abilities[0];
+    let links = chain(head);
+    assert_no_unimplemented(&links, name);
 
-        let printed = Duration::UntilNextTurnOf {
-            player: PlayerScope::Controller,
-        };
+    let printed = Duration::UntilNextTurnOf {
+        player: PlayerScope::Controller,
+    };
 
-        // Positive reach guard: the chain did NOT collapse to one node, and the
-        // head already carries the printed window at BASE. Without this, "the sub
-        // carries the window" could be satisfied by a one-node chain.
-        let prevents: Vec<&&AbilityDefinition> = links
-            .iter()
-            .filter(|d| matches!(&*d.effect, Effect::PreventDamage { .. }))
-            .collect();
-        assert_eq!(
-            prevents.len(),
-            2,
-            "{name}: `dealt to AND dealt by` must lower to TWO PreventDamage links: {links:#?}"
-        );
-        assert_eq!(
-            prevents[0].duration,
-            Some(printed.clone()),
-            "{name}: the head half carries the printed window at BASE already"
-        );
-        assert_eq!(
-            prevents[1].sub_link,
-            SubAbilityLink::SequentialSibling,
-            "{name}: the second half is a sequential sibling of the first"
-        );
+    // Positive reach guard: the chain did NOT collapse to one node, and the
+    // head already carries the printed window at BASE. Without this, "the sub
+    // carries the window" could be satisfied by a one-node chain.
+    let prevents: Vec<&&AbilityDefinition> = links
+        .iter()
+        .filter(|d| matches!(&*d.effect, Effect::PreventDamage { .. }))
+        .collect();
+    assert_eq!(
+        prevents.len(),
+        2,
+        "{name}: `dealt to AND dealt by` must lower to TWO PreventDamage links: {links:#?}"
+    );
+    assert_eq!(
+        prevents[0].duration,
+        Some(printed.clone()),
+        "{name}: the head half carries the printed window at BASE already"
+    );
+    assert_eq!(
+        prevents[1].sub_link,
+        SubAbilityLink::SequentialSibling,
+        "{name}: the second half is a sequential sibling of the first"
+    );
 
-        // THE REVERT-FAILING ASSERTION.
-        assert_eq!(
-            prevents[1].duration,
-            Some(printed),
-            "{name}: CR 611.2a — the `and dealt by` half must carry the printed \
-             `Until your next turn`; at BASE_SHA it is None and the shield is created \
-             with the engine's end-of-turn `is_shield` default instead"
-        );
+    // THE REVERT-FAILING ASSERTION.
+    assert_eq!(
+        prevents[1].duration,
+        Some(printed),
+        "{name}: CR 611.2a — the `and dealt by` half must carry the printed \
+         `Until your next turn`"
+    );
 
-        // B4's other half: the embedded field must stay untouched. An added
-        // `apply_duration_to_effect` arm for `PreventDamage` turns this red.
-        for (i, d) in prevents.iter().enumerate() {
-            match &*d.effect {
-                Effect::PreventDamage {
-                    prevention_duration,
-                    ..
-                } => assert_eq!(
-                    *prevention_duration, None,
-                    "{name}: link {i}'s embedded prevention_duration must stay None — \
-                     `PreventDamage` deliberately has NO apply_duration_to_effect arm"
-                ),
-                other => panic!("{name}: expected PreventDamage, got {other:?}"),
-            }
+    // B4's other half: the embedded field must stay untouched. An added
+    // `apply_duration_to_effect` arm for `PreventDamage` turns this red.
+    for (i, d) in prevents.iter().enumerate() {
+        match &*d.effect {
+            Effect::PreventDamage {
+                prevention_duration,
+                ..
+            } => assert_eq!(
+                *prevention_duration, None,
+                "{name}: link {i}'s embedded prevention_duration must stay None — \
+                 `PreventDamage` deliberately has NO apply_duration_to_effect arm"
+            ),
+            other => panic!("{name}: expected PreventDamage, got {other:?}"),
         }
     }
 }

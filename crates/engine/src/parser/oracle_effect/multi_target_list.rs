@@ -195,16 +195,20 @@ pub(super) fn try_split_multi_target_list(
         links.push((clause, link_ctx.target_chooser));
     }
 
-    // The primary parses last, on the enclosing context, whose clause snapshot
-    // keeps its announcer override.
-    ctx.target_chooser = None;
-    let mut primary = parse_effect_clause_inner(&bodies[0], ctx);
+    // The primary parses last, on a context inheriting the enclosing one; it
+    // replaces the enclosing context only once the split is accepted, so its
+    // clause snapshot keeps the announcer override and a rejected split leaves
+    // the enclosing context untouched for the single-clause fallback.
+    let mut tentative = ctx.clone();
+    tentative.target_chooser = None;
+    let mut primary = parse_effect_clause_inner(&bodies[0], &mut tentative);
     if matches!(primary.effect, Effect::Unimplemented { .. })
         || primary.sub_ability.is_some()
         || primary.effect.target_filter() == Some(&TargetFilter::Any)
     {
         return None;
     }
+    *ctx = tentative;
     primary.sub_ability = links
         .into_iter()
         .rev()

@@ -49785,6 +49785,8 @@ fn an_untyped_cast_target_fails_closed_and_a_typed_one_lowers() {
         "any number of target cards",
         "one or more target cards",
         "any number of spells from your hand",
+        // "the " over a fresh typed pool is not an anaphor.
+        "any number of the instant cards in your graveyard",
     ] {
         assert!(
             cast_untyped_rest_names_a_restriction(rest),
@@ -52673,8 +52675,9 @@ fn attach_host_timing_stonehewer_giant_is_resolution() {
 /// instead of a `ParentTarget` attach bound to the bounced creature, which
 /// CR 400.7 makes a new object.
 ///
-/// Reach-guards: the two modelled clauses in front of it still parse, so the
-/// refusal is the attach clause only, not a whole-line collapse.
+/// Reach-guards: the bounce in front of it still parses, and the chain reaches
+/// the attach clause behind the (attachment-qualified, fail-closed) gain-control
+/// clause, so the refusal is not a whole-line collapse.
 #[test]
 fn plural_anaphor_attachment_clause_is_unsupported() {
     let def = parse_effect_chain(
@@ -52690,9 +52693,12 @@ fn plural_anaphor_attachment_clause_is_unsupported() {
         .sub_ability
         .as_deref()
         .expect("the gain-control clause must follow the bounce");
+    // CR 301.5 + CR 303.4: "that were attached to it" is an unmodelled
+    // attachment relation, so the gain-control clause fails closed too; the
+    // reach-guard is that the chain still reaches the attach clause behind it.
     assert!(
-        matches!(&*gain.effect, Effect::GainControlAll { .. }),
-        "reach-guard: the gain-control clause still parses, got {:?}",
+        matches!(&*gain.effect, Effect::Unimplemented { name, .. } if name == "attached_to_qualifier"),
+        "the gain-control clause must fail closed on its attachment qualifier, got {:?}",
         gain.effect
     );
     let attach_clause = gain
@@ -76483,7 +76489,7 @@ fn put_top_of_graveyard_never_lowers_to_mill() {
             let text = format!("Put the top card of {owner} graveyard {tail}.");
             let def = parse_effect_chain(&text, AbilityKind::Activated);
             assert!(
-                matches!(def.effect.as_ref(), Effect::Unimplemented { .. }),
+                matches!(def.effect.as_ref(), Effect::Unimplemented { name, .. } if name == "put_top_of_graveyard"),
                 "{text}: {:?}",
                 def.effect
             );
@@ -76545,6 +76551,57 @@ fn put_top_cards_of_library_into_graveyard_lowers_to_mill_at_any_count() {
     }
 }
 
+/// CR 701.17a + CR 401.1: the library owner and the count (including X) named
+/// by a "put the top N cards of <owner> library into … graveyard" clause reach
+/// the Mill; an owner the Mill target cannot express fails closed.
+#[test]
+fn put_top_of_library_into_graveyard_carries_owner_and_count() {
+    let x = QuantityExpr::Ref {
+        qty: QuantityRef::Variable {
+            name: "X".to_string(),
+        },
+    };
+    for (text, count, target) in [
+        (
+            "Put the top two cards of your library into your graveyard.",
+            QuantityExpr::Fixed { value: 2 },
+            TargetFilter::Controller,
+        ),
+        (
+            "Put the top X cards of target player's library into their graveyard.",
+            x.clone(),
+            TargetFilter::Player,
+        ),
+        (
+            "Put the top three cards of target player's library into their graveyard.",
+            QuantityExpr::Fixed { value: 3 },
+            TargetFilter::Player,
+        ),
+    ] {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        assert!(
+            matches!(
+                def.effect.as_ref(),
+                Effect::Mill { count: c, target: t, destination: Zone::Graveyard }
+                    if *c == count && *t == target
+            ),
+            "{text}: {:?}",
+            def.effect
+        );
+    }
+
+    let text = "Put the top two cards of each player's library into their graveyard.";
+    let def = parse_effect_chain(text, AbilityKind::Spell);
+    assert!(
+        matches!(
+            def.effect.as_ref(),
+            Effect::Unimplemented { name, .. } if name == "put_top_of_library_per_player"
+        ),
+        "{text}: {:?}",
+        def.effect
+    );
+}
+
 /// CR 701.17a: a library source keeps the self-mill reading at any count.
 #[test]
 fn put_top_of_library_into_graveyard_stays_mill() {
@@ -76583,7 +76640,7 @@ fn perpetual_pt_unmodelable_subject_or_amount_is_unimplemented() {
     ] {
         let def = parse_effect_chain(text, AbilityKind::Spell);
         assert!(
-            matches!(def.effect.as_ref(), Effect::Unimplemented { .. }),
+            matches!(def.effect.as_ref(), Effect::Unimplemented { name, .. } if name == "perpetual_modify_pt"),
             "{text}: {:?}",
             def.effect
         );
@@ -77524,13 +77581,18 @@ fn attached_to_mass_leg_fails_closed_for_every_verb() {
         "Return target creature you control and all Auras you control attached to it to their owner's hand.",
         "Return target creature and each Aura attached to it to their owners' hands.",
         "Exile target attacking creature and all Equipment attached to it.",
+        // Single-verb mass forms and the past tense name the same relation.
+        "Return all Auras attached to target permanent you own to their owner's hand.",
+        "Exile all Auras attached to target creature.",
+        "Gain control of all Equipment that were attached to it.",
+        "Gain control of all Equipment that was attached to it.",
     ] {
         let def = parse_effect_chain(text, AbilityKind::Spell);
         assert!(
             chain_any(&def, &|d| matches!(
                 &*d.effect,
                 Effect::Unimplemented { name, .. } if name == "attached_to_qualifier"
-            )) || chain_has_unimplemented(&def),
+            )),
             "{text}: must fail closed, got {def:#?}"
         );
         assert!(
@@ -77545,6 +77607,9 @@ fn attached_to_mass_leg_fails_closed_for_every_verb() {
     for text in [
         "Return target creature and all Auras to their owners' hands.",
         "Exile target creature and all Equipment.",
+        "Return all Auras to their owners' hands.",
+        "Exile all Equipment.",
+        "Gain control of all Equipment.",
     ] {
         let def = parse_effect_chain(text, AbilityKind::Spell);
         assert!(

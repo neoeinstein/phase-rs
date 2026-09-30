@@ -86,7 +86,7 @@ mod bbfu7_attacks_if_able_not_goad;
 mod belbe_thornbow_life_loss;
 mod belladonna_took;
 mod betor_lifelink_counters_repro;
-mod bidirectional_declared_target_prevent_binds_chosen_creature;
+mod bidirectional_declared_target_prevent_fails_closed;
 mod bilbo_fellow_conspirator_token_replacement;
 mod birgi;
 mod bishop_of_binding_where_x_exiled_card_power;

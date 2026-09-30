@@ -414,7 +414,7 @@ fn elvish_elegy_keeps_the_milled_set_free_of_the_mass_pump() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     scenario.with_library_top(P0, &["Lib Elf", "Lib Land", "Lib Bear"]);
-    scenario.add_creature(P0, "Pumped Bear", 2, 2);
+    let bear = scenario.add_creature(P0, "Pumped Bear", 2, 2).id();
     let spell = scenario
         .add_spell_to_hand_from_oracle(
             P0,
@@ -426,7 +426,13 @@ fn elvish_elegy_keeps_the_milled_set_free_of_the_mass_pump() {
         .id();
     let mut runner: GameRunner = scenario.build();
     runner.cast(spell).resolve();
+    evaluate_layers(runner.state_mut());
 
+    assert_eq!(
+        runner.state().objects[&bear].power,
+        Some(3),
+        "non-vacuity: the mass pump ran over a non-empty population"
+    );
     let set = published_set(runner.state());
     assert_eq!(
         set.len(),

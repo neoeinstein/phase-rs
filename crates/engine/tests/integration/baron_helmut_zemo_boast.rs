@@ -578,12 +578,33 @@ fn copy_then_conditional_cast_idiom_not_fused_away() {
         let parsed = parse_oracle_text(oracle, name, &[], types, subs);
         // Reach-guard: every ability and trigger parsed, so the swallow check below is not
         // vacuously satisfied by a fail-closed unit.
+        let roots: Vec<&AbilityDefinition> = parsed
+            .abilities
+            .iter()
+            .chain(parsed.triggers.iter().filter_map(|t| t.execute.as_deref()))
+            .collect();
+        let mut chain: Vec<&AbilityDefinition> = Vec::new();
+        for root in &roots {
+            let mut node = Some(*root);
+            while let Some(def) = node {
+                chain.push(def);
+                node = def.sub_ability.as_deref();
+            }
+        }
         assert!(
-            !parsed
-                .abilities
+            chain
                 .iter()
-                .chain(parsed.triggers.iter().filter_map(|t| t.execute.as_deref()))
-                .any(contains_unimplemented),
+                .any(|d| matches!(*d.effect, Effect::CopySpell { .. })),
+            "{name}: fixture must keep the CopySpell node, else the check is vacuous"
+        );
+        assert!(
+            chain
+                .iter()
+                .any(|d| matches!(*d.effect, Effect::CastFromZone { .. }) && d.condition.is_some()),
+            "{name}: fixture must keep the conditional CastFromZone sub-ability"
+        );
+        assert!(
+            !roots.iter().copied().any(contains_unimplemented),
             "{name}: fixture must parse with zero Effect::Unimplemented"
         );
         let swallowed: Vec<_> = parsed

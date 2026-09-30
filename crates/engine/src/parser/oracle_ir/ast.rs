@@ -1709,13 +1709,18 @@ pub(crate) enum ChooseImperativeAst {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) enum PutImperativeAst {
+    /// CR 701.17a: "put the top <count> cards of <owner> library into <owner>
+    /// graveyard" — a mill whose owner and count are carried, never assumed.
     Mill {
-        count: u32,
+        count: QuantityExpr,
+        target: TargetFilter,
     },
-    /// CR 404.1: "put the top card of <possessive> graveyard …" — a
-    /// graveyard-sourced move the engine cannot yet select; lowers to an
-    /// honest `Effect::unimplemented` carrying the printed clause.
-    GraveyardTopUnsupported {
+    /// A put clause the engine cannot yet model (e.g. CR 404.1 "put the top
+    /// card of <possessive> graveyard …", a graveyard-sourced move it cannot
+    /// select); lowers to an honest `Effect::unimplemented` named `gap` and
+    /// carrying the printed clause.
+    Unimplemented {
+        gap: &'static str,
         fragment: String,
     },
     ZoneChange {

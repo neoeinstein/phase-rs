@@ -8267,6 +8267,25 @@ fn strip_top_count(input: &str) -> &str {
     .map_or(input, |(rest, _)| rest)
 }
 
+/// The count between "put the top " and the head noun as a `QuantityExpr`
+/// ("two" -> Fixed, "x" -> `Variable("X")`, absent -> 1); returns the text after it.
+fn parse_top_count(input: &str) -> (&str, QuantityExpr) {
+    match nom_primitives::parse_number.parse(input) {
+        Ok((rem, n)) => (rem, QuantityExpr::Fixed { value: n as i32 }),
+        Err(_) => match tag::<_, _, OracleError<'_>>("x").parse(input) {
+            Ok((rem, _)) => (
+                rem,
+                QuantityExpr::Ref {
+                    qty: QuantityRef::Variable {
+                        name: "X".to_string(),
+                    },
+                },
+            ),
+            Err(_) => (input, QuantityExpr::Fixed { value: 1 }),
+        },
+    }
+}
+
 /// CR 404.1: The source phrase of "put the top <count?> <type?> card(s) of
 /// <owner> graveyard …" — the text after "put the top ". Matches the optional
 /// count and card type, the "card(s) of" head noun, the owner and the
@@ -8301,12 +8320,6 @@ fn parse_graveyard_top_source(input: &str) -> Option<&str> {
     Some(rest)
 }
 
-/// CR 701.17a: A mill takes its cards from a library. True iff `input` (the
-/// text after "put the top ") names "<count?> card(s) of <owner> library".
-fn names_library_top_source(input: &str, ctx: &ParseContext) -> bool {
-    parse_library_player_suffix(strip_top_count(input), ctx).is_some()
-}
-
 pub(super) fn parse_put_ast(
     text: &str,
     lower: &str,
@@ -8339,19 +8352,30 @@ pub(super) fn parse_put_ast(
         // Mill below (the opposite direction) nor the generic library-position
         // reposition, which would move an arbitrary card.
         if parse_graveyard_top_source(after).is_some() {
-            return Some(PutImperativeAst::GraveyardTopUnsupported {
+            return Some(PutImperativeAst::Unimplemented {
+                gap: "put_top_of_graveyard",
                 fragment: text.to_string(),
             });
         }
         // CR 701.17a: only a library source is a mill; "graveyard" appearing
         // elsewhere in the clause must not select it.
-        if names_library_top_source(after, ctx) && nom_primitives::scan_contains(lower, "graveyard")
-        {
-            let count = nom_primitives::parse_number
-                .parse(after)
-                .map(|(_, n)| n)
-                .unwrap_or(1);
-            return Some(PutImperativeAst::Mill { count });
+        if let Some((_, owner)) = parse_library_player_suffix(strip_top_count(after), ctx) {
+            if nom_primitives::scan_contains(lower, "graveyard") {
+                // CR 401.1: "each player's library" is a per-player fan-out the
+                // Mill target cannot express; fail closed rather than mill one
+                // player.
+                if matches!(owner, TargetFilter::ScopedPlayer) {
+                    return Some(PutImperativeAst::Unimplemented {
+                        gap: "put_top_of_library_per_player",
+                        fragment: text.to_string(),
+                    });
+                }
+                let (_, count) = parse_top_count(after);
+                return Some(PutImperativeAst::Mill {
+                    count,
+                    target: owner,
+                });
+            }
         }
 
         // CR 701.40a + CR 708.2a + CR 110.2a: "put the top N cards of [a player]'s
@@ -8361,20 +8385,7 @@ pub(super) fn parse_put_ast(
         // face-down profile seed, and an optional controller override — none of
         // which the generic `try_parse_put_zone_change_parts` ChangeZone path
         // preserves. Intercept it here, before that fallback.
-        let (rem, count) = match nom_primitives::parse_number.parse(after) {
-            Ok((rem, n)) => (rem, QuantityExpr::Fixed { value: n as i32 }),
-            Err(_) => match tag::<_, _, OracleError<'_>>("x").parse(after) {
-                Ok((rem, _)) => (
-                    rem,
-                    QuantityExpr::Ref {
-                        qty: QuantityRef::Variable {
-                            name: "X".to_string(),
-                        },
-                    },
-                ),
-                Err(_) => (after, QuantityExpr::Fixed { value: 1 }),
-            },
-        };
+        let (rem, count) = parse_top_count(after);
         // CR 701.40a: This is the manifest surface form, so the dispatch
         // condition is "<library-owner suffix> onto the battlefield face down".
         // The library-owner suffix must match AND the tail must continue with
@@ -8651,15 +8662,11 @@ pub(super) fn lower_put_ast(ast: PutImperativeAst) -> Effect {
     match ast {
         // CR 404.1: no representation for "the top card of a graveyard" yet;
         // fail closed rather than mis-route it as a library mill.
-        PutImperativeAst::GraveyardTopUnsupported { fragment } => {
-            Effect::unimplemented("put_top_of_graveyard", fragment)
-        }
-        PutImperativeAst::Mill { count } => Effect::Mill {
-            count: QuantityExpr::Fixed {
-                value: count as i32,
-            },
-            // CR 701.17a: "Put top N into graveyard" is self-mill.
-            target: TargetFilter::Controller,
+        PutImperativeAst::Unimplemented { gap, fragment } => Effect::unimplemented(gap, fragment),
+        PutImperativeAst::Mill { count, target } => Effect::Mill {
+            count,
+            // CR 701.17a: the library owner named by the clause is the milled player.
+            target,
             destination: Zone::Graveyard,
         },
         PutImperativeAst::ZoneChangeAll {
@@ -10004,6 +10011,9 @@ fn lower_change_zone_all_to_library(origins: Vec<Zone>) -> ParsedEffectClause {
     clause
 }
 
+/// Gap name for a mass clause whose "attached to <object>" relation is unmodelled.
+pub(super) const ATTACHED_TO_QUALIFIER_GAP: &str = "attached_to_qualifier";
+
 /// CR 301.5 + CR 303.4: an unconsumed " attached to <object>" qualifier after a
 /// target phrase ("all Equipment attached to that creature"). The target filter
 /// cannot express the relation, so dropping it would widen the population to
@@ -10012,9 +10022,61 @@ fn lower_change_zone_all_to_library(origins: Vec<Zone>) -> ParsedEffectClause {
 /// (`try_split_targeted_compound`), which covers every verb that carries a
 /// "<verb> target X and all Auras attached to it" leg (bounce, exile, ...).
 pub(super) fn opens_attachment_qualifier(remainder: &str) -> bool {
-    tag::<_, _, OracleError<'_>>(" attached to ")
-        .parse(remainder)
-        .is_ok()
+    // Present and past tense ("Auras attached to it" / "Equipment that were
+    // attached to it", Murderous Spoils) name the same unmodelled relation.
+    preceded(
+        opt(alt((
+            tag::<_, _, OracleError<'_>>(" that were"),
+            tag(" that was"),
+        ))),
+        tag(" attached to "),
+    )
+    .parse(remainder)
+    .is_ok()
+}
+
+/// CR 301.5 + CR 303.4: `text` starts at an `all`/`each` mass quantifier
+/// ("all Auras attached to it"); true when the parsed target phrase leaves an
+/// attachment qualifier unconsumed. The single recognizer for the mass-leg
+/// splitter and for every verb-led mass clause
+/// (`mass_verb_clause_opens_attachment_qualifier`).
+pub(super) fn mass_object_opens_attachment_qualifier(
+    text: &str,
+    lower: &str,
+    ctx: &ParseContext,
+) -> bool {
+    let Ok((after_quantifier, _)) = alt((
+        tag::<_, _, OracleError<'_>>("all "),
+        tag::<_, _, OracleError<'_>>("each "),
+    ))
+    .parse(lower) else {
+        return false;
+    };
+    let noun_text = &text[text.len() - after_quantifier.len()..];
+    let (_, rem) = parse_target_with_ctx(noun_text, &mut ctx.clone_throwaway());
+    opens_attachment_qualifier(rem)
+}
+
+/// CR 301.5 + CR 303.4: a verb-led mass clause ("return all Auras attached to
+/// target permanent", "exile all Auras attached to …", "gain control of all
+/// Equipment that were attached to it") whose target phrase is followed by an
+/// attachment qualifier. No `TargetFilter` expresses the relation, so every
+/// mass verb (bounce, exile, gain control, ...) would otherwise widen to every
+/// such permanent; the caller fails closed instead.
+fn mass_verb_clause_opens_attachment_qualifier(
+    text: &str,
+    lower: &str,
+    ctx: &ParseContext,
+) -> bool {
+    let Ok((after_verb, _)) = alt((
+        tag::<_, _, OracleError<'_>>("gain control of "),
+        terminated(take_while1(|c: char| c.is_alphabetic()), space1),
+    ))
+    .parse(lower) else {
+        return false;
+    };
+    let object_text = &text[text.len() - after_verb.len()..];
+    mass_object_opens_attachment_qualifier(object_text, after_verb, ctx)
 }
 
 pub(super) fn parse_destroy_ast(
@@ -11944,6 +12006,13 @@ pub(super) fn parse_imperative_family_ast(
     let text = text.trim_start();
     let lower = lower.trim_start();
     let first_word = lower.split_whitespace().next().unwrap_or("");
+
+    if mass_verb_clause_opens_attachment_qualifier(text, lower, ctx) {
+        return Some(ImperativeFamilyAst::GainKeyword(Effect::unimplemented(
+            ATTACHED_TO_QUALIFIER_GAP,
+            text,
+        )));
+    }
 
     // CR 701.60a: "[subject] no longer suspected" — the un-designation
     // transition. The subject leads the clause (varying anaphor / noun phrase),
