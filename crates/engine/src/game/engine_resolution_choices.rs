@@ -10343,10 +10343,11 @@ mod tests {
     use super::*;
     use crate::game::zones::create_object;
     use crate::types::ability::{
-        AbilityDefinition, AbilityKind, CastPermissionConstraint, CastingPermission, Comparator,
-        ControllerRef, Duration, FilterProp, ManaSpendPermission, PermissionGrantee, QuantityExpr,
-        ReplacementDefinition, ReplacementMode, ReplacementPlayerScope, ResolutionCastFacePolicy,
-        SearchSelectionConstraint, StaticDefinition, TargetFilter, TypeFilter, TypedFilter,
+        AbilityCondition, AbilityDefinition, AbilityKind, CastPermissionConstraint,
+        CastingPermission, Comparator, ControllerRef, Duration, FilterProp, ManaSpendPermission,
+        PermissionGrantee, QuantityExpr, ReplacementDefinition, ReplacementMode,
+        ReplacementPlayerScope, ResolutionCastFacePolicy, SearchSelectionConstraint,
+        StaticDefinition, TargetFilter, TypeFilter, TypedFilter,
     };
     use crate::types::card_type::CoreType;
     use crate::types::identifiers::CardId;
@@ -10354,6 +10355,7 @@ mod tests {
     use crate::types::proposed_event::ReplacementId;
     use crate::types::replacements::ReplacementEvent;
     use crate::types::statics::{ProhibitionScope, StaticMode};
+    use crate::types::zones::EtbTapState;
 
     /// CR 701.23a + CR 701.24a: A search whose continuation begins with a
     /// parent-target shuffle must retain the player target after replacing the
@@ -12818,10 +12820,6 @@ mod tests {
     /// skips it even over the default `false`.
     #[test]
     fn up_to_effect_zone_choice_stamps_optional_effect_performed() {
-        use crate::types::ability::{AbilityCondition, Effect, ResolvedAbility};
-        use crate::types::game_state::PendingContinuation;
-        use crate::types::zones::EtbTapState;
-
         let kinds = [
             (EffectKind::ChangeZone, Zone::Graveyard, Some(Zone::Hand)),
             (EffectKind::BounceAll, Zone::Battlefield, Some(Zone::Hand)),
