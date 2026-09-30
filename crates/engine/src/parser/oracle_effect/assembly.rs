@@ -3630,10 +3630,10 @@ pub(crate) fn assemble_effect_chain(ir: &EffectChainIr) -> AbilityDefinition {
                     if unbindable {
                         current_defs.truncate(1);
                         let head = &mut current_defs[0];
-                        head.effect = Box::new(Effect::unimplemented(
+                        *head.effect = Effect::unimplemented(
                             "multi_slot_list_back_reference",
                             clause_ir.source.fragment().unwrap_or_default(),
-                        ));
+                        );
                         head.sub_ability = None;
                     }
                 }
