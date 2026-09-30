@@ -8,9 +8,10 @@
 //! The clause must therefore report the card as UNSUPPORTED rather than
 //! silently claiming support while its printed instruction does nothing. This
 //! file pins the honesty through the PUBLIC coverage authority
-//! (`card_face_gaps`), with a paired positive control that the SINGULAR form of
-//! the same sentence stays supported — so the gap cannot come from the
-//! sentence's other clauses.
+//! (`card_face_gaps`), with a paired control that the SINGULAR form of the same
+//! sentence is never refused as plural (it reports only the gain-control
+//! clause's `attached_to_qualifier` gap) — so the plural gap cannot come from
+//! the sentence's other clauses.
 
 use engine::game::coverage::card_face_gaps;
 use engine::parser::parse_oracle_text;
@@ -82,6 +83,20 @@ fn plural_anaphor_attachment_reports_a_coverage_gap() {
 #[test]
 fn singular_attachment_anaphor_is_not_refused_as_plural() {
     let face = spell_face("Fumble (singular fixture)", FUMBLE_SINGULAR);
+    // Reach-guard: the singular attach clause parses as its own Attach, so the
+    // plural-refusal negative below reads a clause that reached the parser.
+    fn chain_has_attach(def: &engine::types::ability::AbilityDefinition) -> bool {
+        matches!(&*def.effect, engine::types::ability::Effect::Attach { .. })
+            || def.sub_ability.as_deref().is_some_and(chain_has_attach)
+    }
+    assert!(
+        face.abilities.iter().any(chain_has_attach),
+        "reach-guard: the singular attach clause must parse to an Attach, got {:?}",
+        face.abilities
+            .iter()
+            .map(|d| format!("{:?}", d.effect))
+            .collect::<Vec<_>>()
+    );
     let gaps = card_face_gaps(&face);
     assert!(
         !gaps.is_empty() && gaps.iter().any(|gap| gap.contains("attached_to_qualifier")),

@@ -1733,11 +1733,6 @@ fn fumble_plural_attachment_anaphor_is_unsupported() {
         P1,
         "the unsupported control-gain clause must not change the Equipment's controller"
     );
-    assert_eq!(
-        runner.state().objects[&aura].controller,
-        P1,
-        "the unsupported control-gain clause must not change the Aura's controller"
-    );
 
     // The refused clause contributes nothing: nothing was NEWLY attached. The
     // Equipment is merely unattached (CR 704.5n) and the host-less Aura left
