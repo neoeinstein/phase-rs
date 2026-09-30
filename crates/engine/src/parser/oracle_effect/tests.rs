@@ -76622,6 +76622,29 @@ fn put_top_of_library_into_graveyard_carries_owner_and_count() {
             def.effect
         );
     }
+
+    // Only a `ScopedPlayer` relative scope (an enclosing "Each player ...") makes
+    // the literal "each player's library" anaphoric; under any other scope it is
+    // still the per-player fan-out and fails closed.
+    for scope in [ControllerRef::DefendingPlayer, ControllerRef::TargetPlayer] {
+        let mut ctx = ParseContext {
+            relative_player_scope: Some(scope.clone()),
+            ..ParseContext::default()
+        };
+        let def = parse_effect_chain_with_context(
+            "Put the top two cards of each player's library into their graveyards.",
+            AbilityKind::Spell,
+            &mut ctx,
+        );
+        assert!(
+            matches!(
+                def.effect.as_ref(),
+                Effect::Unimplemented { name, .. } if name == "put_top_of_library_per_player"
+            ),
+            "{scope:?}: {:?}",
+            def.effect
+        );
+    }
 }
 
 /// CR 701.17a: a library source keeps the self-mill reading at any count.

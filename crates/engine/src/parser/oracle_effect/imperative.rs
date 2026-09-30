@@ -8372,9 +8372,12 @@ pub(super) fn parse_put_ast(
                 // library"; Mill does not run `lift_distributive_exile_top_scope`.
                 // `ScopedPlayer` from an anaphoric "their library" bound by an enclosing
                 // "Each player ..." scope (Largepox) is already iterated by that scope,
-                // so a single Mill is correct; only the literal row is a fan-out.
+                // so a single Mill is correct. That is the only scope that resolves
+                // `ScopedPlayer` anaphorically (`that_player_library_filter`); under any
+                // other scope (or none) `ScopedPlayer` is the literal "each player's
+                // library" fan-out.
                 let literal_per_player = matches!(owner, TargetFilter::ScopedPlayer)
-                    && ctx.relative_player_scope.is_none();
+                    && ctx.relative_player_scope != Some(ControllerRef::ScopedPlayer);
                 if literal_per_player || matches!(owner, TargetFilter::Opponent) {
                     return Some(PutImperativeAst::Unimplemented {
                         gap: "put_top_of_library_per_player",
