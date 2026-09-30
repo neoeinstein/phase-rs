@@ -77221,3 +77221,185 @@ fn destroy_target_blocked_creature_carries_blocked_status() {
         status: AttackerBlockStatus::Blocked
     }));
 }
+
+/// Parse a one-sentence prevention clause and return the leaf `PreventDamage`
+/// fields the "dealt by target <source>" class tests assert on.
+fn parse_prevent_dealt_by_clause(
+    text: &str,
+) -> (PreventionScope, Option<TargetFilter>, TargetFilter) {
+    let def = parse_effect_chain(text, AbilityKind::Spell);
+    let Effect::PreventDamage {
+        amount: PreventionAmount::All,
+        scope,
+        damage_source_filter,
+        target,
+        ..
+    } = &*def.effect
+    else {
+        panic!("expected PreventDamage for {text:?}, got {:#?}", def.effect);
+    };
+    (*scope, damage_source_filter.clone(), target.clone())
+}
+
+/// CR 609.7 + CR 615.2: "dealt by target <source>" names the damage SOURCE, so
+/// it lowers to the source-scoped `And{[ParentTargetSlot{0}, <source>]}` shape
+/// with no recipient scope, whichever side of "by" carries "this turn".
+#[test]
+fn prevent_dealt_by_target_source_binds_declared_slot_not_recipient() {
+    let by_first =
+        "Prevent all combat damage that would be dealt by target blocked creature this turn.";
+    let this_turn_first =
+        "Prevent all combat damage that would be dealt this turn by target blocked creature.";
+    let mut lowered = Vec::new();
+    for text in [by_first, this_turn_first] {
+        let (scope, source_filter, recipient) = parse_prevent_dealt_by_clause(text);
+        assert_eq!(scope, PreventionScope::CombatDamage, "{text}");
+        assert_eq!(recipient, TargetFilter::Any, "{text}");
+        let Some(TargetFilter::And { filters }) = source_filter else {
+            panic!("expected source-scoped And filter for {text:?}");
+        };
+        let [TargetFilter::ParentTargetSlot { index: 0 }, TargetFilter::Typed(tf)] =
+            filters.as_slice()
+        else {
+            panic!("expected [ParentTargetSlot{{0}}, Typed] for {text:?}, got {filters:?}");
+        };
+        assert!(tf.type_filters.contains(&TypeFilter::Creature), "{text}");
+        assert!(
+            tf.properties.contains(&FilterProp::BlockStatus {
+                status: crate::types::ability::AttackerBlockStatus::Blocked
+            }),
+            "the blocked-creature property must survive on the declared slot for {text:?}"
+        );
+        lowered.push(filters);
+    }
+    assert_eq!(lowered[0], lowered[1], "both word orders lower identically");
+}
+
+/// CR 609.7 + CR 615.2: the all-damage scope and a spell source ("instant or
+/// sorcery spell", Hidden Retreat) reach the same source-scoped building block
+/// as the "would deal" wording (Dromoka's Command): a declared source slot whose
+/// leaf is an instant-or-sorcery spell on the stack.
+#[test]
+fn prevent_dealt_by_target_spell_source_matches_would_deal_wording() {
+    fn stack_spell_type_leaves(filter: &TargetFilter, out: &mut Vec<TypeFilter>) {
+        match filter {
+            TargetFilter::Typed(tf) => out.extend(tf.type_filters.iter().cloned()),
+            TargetFilter::And { filters } | TargetFilter::Or { filters } => filters
+                .iter()
+                .for_each(|leaf| stack_spell_type_leaves(leaf, out)),
+            _ => {}
+        }
+    }
+    let leaf_of = |source_filter: Option<TargetFilter>| {
+        let Some(TargetFilter::And { filters }) = source_filter else {
+            panic!("expected source-scoped And filter, got {source_filter:?}");
+        };
+        let [TargetFilter::ParentTargetSlot { index: 0 }, leaf] = filters.as_slice() else {
+            panic!("expected [ParentTargetSlot{{0}}, leaf], got {filters:?}");
+        };
+        assert!(
+            format!("{leaf:?}").contains("StackSpell"),
+            "leaf must be stack-scoped, got {leaf:?}"
+        );
+        let mut types = Vec::new();
+        stack_spell_type_leaves(leaf, &mut types);
+        types
+    };
+    let (scope, dealt_by, recipient) = parse_prevent_dealt_by_clause(
+        "Prevent all damage that would be dealt by target instant or sorcery spell this turn.",
+    );
+    let (_, would_deal, _) = parse_prevent_dealt_by_clause(
+        "Prevent all damage target instant or sorcery spell would deal this turn.",
+    );
+    assert_eq!(scope, PreventionScope::AllDamage);
+    assert_eq!(recipient, TargetFilter::Any);
+    for source_filter in [dealt_by, would_deal] {
+        let types = leaf_of(source_filter);
+        assert!(types.contains(&TypeFilter::Instant) && types.contains(&TypeFilter::Sorcery));
+    }
+}
+
+/// CR 609.7: an attacking-or-blocking source keeps both alternatives on the
+/// declared slot rather than collapsing to a recipient `Any`.
+#[test]
+fn prevent_dealt_by_target_attacking_or_blocking_creature_keeps_properties() {
+    let (_, source_filter, recipient) = parse_prevent_dealt_by_clause(
+        "Prevent all combat damage that would be dealt by target attacking or blocking creature this turn.",
+    );
+    assert_eq!(recipient, TargetFilter::Any);
+    let Some(TargetFilter::And { filters }) = source_filter else {
+        panic!("expected source-scoped And filter, got {source_filter:?}");
+    };
+    assert!(matches!(
+        filters.as_slice(),
+        [TargetFilter::ParentTargetSlot { index: 0 }, leaf]
+            if !matches!(leaf, TargetFilter::Typed(tf) if tf.properties.is_empty())
+    ));
+}
+
+/// CR 615.3 vs CR 609.7: a bare "target creature" source lowers to the exact
+/// shape the resolver treats as a one-shot ("the next time", Awe Strike), which
+/// would stop preventing after one damage event. The continuous wording must
+/// fail closed instead of lowering to that shape or to a recipient shape.
+#[test]
+fn prevent_dealt_by_bare_target_creature_fails_closed() {
+    let def = parse_effect_chain(
+        "Prevent all combat damage that would be dealt by target creature this turn.",
+        AbilityKind::Spell,
+    );
+    assert!(
+        matches!(&*def.effect, Effect::Unimplemented { name, .. } if name == "prevent_damage_dealt_by_target"),
+        "expected fail-closed Unimplemented, got {:#?}",
+        def.effect
+    );
+}
+
+/// CR 615 + CR 609.7: through the full spell-line router, the fail-closed
+/// "dealt by target creature" line stays a spell gap. It must not fall through
+/// to the replacement priority, which reads it as a blanket prevention of all
+/// combat damage (a Fog) with no source. Paired positive: a qualified source
+/// ("attacking creature") still lowers to the source-scoped spell shape.
+#[test]
+fn prevent_dealt_by_target_spell_line_never_becomes_a_blanket_replacement() {
+    let parse = |text: &str| {
+        parse_oracle_text(text, "Prevention Probe", &[], &["Instant".to_string()], &[])
+    };
+
+    let closed =
+        parse("Prevent all combat damage that would be dealt this turn by target creature.");
+    assert!(
+        closed.replacements.is_empty(),
+        "no blanket replacement: {:#?}",
+        closed.replacements
+    );
+    assert_eq!(
+        closed.abilities.len(),
+        1,
+        "the line stays one spell ability"
+    );
+    assert!(
+        matches!(&*closed.abilities[0].effect, Effect::Unimplemented { name, .. } if name == "prevent_damage_dealt_by_target"),
+        "{:#?}",
+        closed.abilities[0].effect
+    );
+
+    let lowered = parse(
+        "Prevent all combat damage that would be dealt by target attacking creature this turn.",
+    );
+    assert!(
+        lowered.replacements.is_empty(),
+        "{:#?}",
+        lowered.replacements
+    );
+    assert!(
+        matches!(
+            &*lowered.abilities[0].effect,
+            Effect::PreventDamage {
+                damage_source_filter: Some(_),
+                ..
+            }
+        ),
+        "{:#?}",
+        lowered.abilities[0].effect
+    );
+}

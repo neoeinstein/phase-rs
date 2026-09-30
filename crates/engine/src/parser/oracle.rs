@@ -67,6 +67,7 @@ use super::oracle_condition::parse_restriction_condition;
 use super::oracle_cost::{parse_oracle_cost, parse_single_cost, try_parse_cost_reduction};
 use super::oracle_dispatch::{dispatch_line_nom, NomDispatchIr};
 use super::oracle_effect::gap_diagnosis;
+use super::oracle_effect::imperative::PREVENT_DEALT_BY_TARGET_GAP;
 use super::oracle_effect::sequence::try_parse_same_is_true_continuation;
 use super::oracle_effect::{
     ability_chain_grants_chosen_color_keyword, lower_ability_ir, parse_ability_ir_standalone,
@@ -7028,7 +7029,15 @@ fn parse_normalized_oracle_ir(
             // again in `ability_ir_at` repeats one computation rather than
             // performing two different ones.
             let ir = parse_ability_ir_with_context(&line, AbilityKind::Spell, &mut ctx);
-            if !has_unimplemented(&lower_ability_ir(&ir)) {
+            let lowered = lower_ability_ir(&ir);
+            // A "dealt by target <source>" prevention that cannot lower faithfully
+            // stays on this route as its gap: falling through would let Priority 8
+            // read it as a blanket, card-wide prevention replacement.
+            let is_dealt_by_target_gap = matches!(
+                &*lowered.effect,
+                Effect::Unimplemented { name, .. } if name == PREVENT_DEALT_BY_TARGET_GAP
+            );
+            if !has_unimplemented(&lowered) || is_dealt_by_target_gap {
                 emitter.ability_ir_at(item_line, ir);
                 i += 1;
                 continue;
