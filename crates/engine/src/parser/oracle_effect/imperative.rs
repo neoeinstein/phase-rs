@@ -7869,6 +7869,13 @@ fn parse_prevent_effect(text: &str, parent_target_available: bool) -> Effect {
 /// priority cannot re-read the line as a blanket prevention replacement.
 pub(crate) const PREVENT_DEALT_BY_TARGET_GAP: &str = "prevent_damage_dealt_by_target";
 
+/// Gap for a bidirectional prevent whose "to" half names a declared "target
+/// <X>" recipient; no representation scopes both halves to the one chosen
+/// object yet. Like `PREVENT_DEALT_BY_TARGET_GAP`, the spell prevent route
+/// keeps it as-is.
+pub(crate) const BIDIRECTIONAL_PREVENT_DECLARED_TARGET_GAP: &str =
+    "bidirectional_prevent_declared_target";
+
 /// CR 609.7 + CR 615.2: Recognize the passive source-scoped prevent wording
 /// "... that would be dealt [this turn] by target `<source>` [this turn]"
 /// (Kor Haven, Hidden Retreat, Benalish Missionary). Returns `None` when the
@@ -8256,15 +8263,13 @@ pub(super) fn lower_imperative_ast(ast: ImperativeAst) -> Effect {
 /// The optional count ("two", "x") between "put the top " and the head noun;
 /// returns the text after it.
 fn strip_top_count(input: &str) -> &str {
-    opt(terminated(
-        alt((
-            recognize(nom_primitives::parse_number),
-            tag::<_, _, OracleError<'_>>("x"),
-        )),
-        space1,
-    ))
-    .parse(input)
-    .map_or(input, |(rest, _)| rest)
+    let (after_count, _) = parse_top_count(input);
+    if after_count.len() == input.len() {
+        return input;
+    }
+    space1::<_, OracleError<'_>>
+        .parse(after_count)
+        .map_or(input, |(rest, _)| rest)
 }
 
 /// The count between "put the top " and the head noun as a `QuantityExpr`
@@ -8364,7 +8369,9 @@ pub(super) fn parse_put_ast(
                 // CR 401.1: "each player's library" is a per-player fan-out the
                 // Mill target cannot express; fail closed rather than mill one
                 // player.
-                if matches!(owner, TargetFilter::ScopedPlayer) {
+                // `Opponent` is the per-opponent sentinel of "each opponent's
+                // library"; Mill does not run `lift_distributive_exile_top_scope`.
+                if matches!(owner, TargetFilter::ScopedPlayer | TargetFilter::Opponent) {
                     return Some(PutImperativeAst::Unimplemented {
                         gap: "put_top_of_library_per_player",
                         fragment: text.to_string(),
@@ -10070,7 +10077,12 @@ fn mass_verb_clause_opens_attachment_qualifier(
 ) -> bool {
     let Ok((after_verb, _)) = alt((
         tag::<_, _, OracleError<'_>>("gain control of "),
-        terminated(take_while1(|c: char| c.is_alphabetic()), space1),
+        // "for each Aura attached to it, <verb> ..." opens with the for-each
+        // quantifier, not a verb: its object is not the mass phrase.
+        preceded(
+            not(tag("for ")),
+            terminated(take_while1(|c: char| c.is_alphabetic()), space1),
+        ),
     ))
     .parse(lower) else {
         return false;
@@ -16819,6 +16831,38 @@ mod tests {
     use super::*;
     use crate::types::ability::{ParitySource, ZoneChoiceChooser};
     use crate::types::phase::PhaseGroup;
+
+    /// CR 301.5 + CR 303.4: a verb-led mass clause with an attachment qualifier
+    /// is recognized; a clause led by the for-each quantifier is not a verb-led
+    /// mass clause and keeps its own classification.
+    #[test]
+    fn mass_verb_clause_attachment_qualifier_requires_a_verb_lead() {
+        for text in [
+            "destroy all Auras attached to target creature",
+            "exile each Equipment attached to it",
+            "gain control of all Equipment that were attached to it",
+        ] {
+            let lower = text.to_lowercase();
+            assert!(
+                mass_verb_clause_opens_attachment_qualifier(text, &lower, &ParseContext::default()),
+                "{text}: verb-led mass clause must be recognized"
+            );
+        }
+        for text in [
+            "for each nontoken permanent attached to it, destroy that permanent",
+            "for each Aura attached to you, you gain 1 life",
+        ] {
+            let lower = text.to_lowercase();
+            assert!(
+                !mass_verb_clause_opens_attachment_qualifier(
+                    text,
+                    &lower,
+                    &ParseContext::default()
+                ),
+                "{text}: a for-each clause is not a verb-led mass clause"
+            );
+        }
+    }
 
     /// Matrix row 18 — the mana ROLE must survive the cost-resource AST
     /// round-trip byte-for-byte.

@@ -76590,16 +76590,20 @@ fn put_top_of_library_into_graveyard_carries_owner_and_count() {
         );
     }
 
-    let text = "Put the top two cards of each player's library into their graveyard.";
-    let def = parse_effect_chain(text, AbilityKind::Spell);
-    assert!(
-        matches!(
-            def.effect.as_ref(),
-            Effect::Unimplemented { name, .. } if name == "put_top_of_library_per_player"
-        ),
-        "{text}: {:?}",
-        def.effect
-    );
+    for text in [
+        "Put the top two cards of each player's library into their graveyard.",
+        "Put the top two cards of each opponent's library into their graveyard.",
+    ] {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        assert!(
+            matches!(
+                def.effect.as_ref(),
+                Effect::Unimplemented { name, .. } if name == "put_top_of_library_per_player"
+            ),
+            "{text}: {:?}",
+            def.effect
+        );
+    }
 }
 
 /// CR 701.17a: a library source keeps the self-mill reading at any count.

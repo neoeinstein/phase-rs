@@ -9189,7 +9189,7 @@ pub(super) fn try_parse_bidirectional_prevent(
     // matches. Fail closed until the declared form has its own representation.
     if parse_declared_target_prefix(anaphor_tp.lower).is_ok() {
         return Some(parsed_clause(Effect::unimplemented(
-            "bidirectional_prevent_declared_target",
+            super::imperative::BIDIRECTIONAL_PREVENT_DECLARED_TARGET_GAP,
             text,
         )));
     }
