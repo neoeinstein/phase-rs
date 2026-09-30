@@ -49745,6 +49745,26 @@ fn an_untyped_cast_target_fails_closed_and_a_typed_one_lowers() {
             "Gale, Waterdeep Prodigy",
             "you may cast up to one target card of the other type from your graveyard",
         ),
+        // The cardinality axis is composed with `parse_cast_quantifier_prefix`,
+        // so every quantifier spelling and the "another" head gap alike.
+        (
+            "up to two target",
+            "you may cast up to two target cards of the other type from your graveyard",
+        ),
+        (
+            "any number of target",
+            "you may cast any number of target cards of the other type from your graveyard",
+        ),
+        // A quantified pool whose noun Branch 2 could not type: the bare `Any`
+        // fallback would grant a cast of every card in every zone.
+        (
+            "Chandra Ablaze",
+            "cast any number of red instant and/or sorcery cards from your graveyard without paying their mana costs",
+        ),
+        (
+            "The Great Synthesis",
+            "you may cast any number of spells from your hand without paying their mana costs",
+        ),
     ] {
         let effect = parse_effect(text);
         let Effect::Unimplemented { name: gap, .. } = &effect else {
@@ -49752,6 +49772,46 @@ fn an_untyped_cast_target_fails_closed_and_a_typed_one_lowers() {
         };
         assert_eq!(gap, CAST_TARGET_UNTYPED_GAP, "{name}");
     }
+
+    // The guard is one combinator over the cardinality axis, so the "another"
+    // head and each quantifier spelling are pinned on it directly; the anaphor
+    // and self-reference rows are the paired positives that keep it from
+    // matching every remainder.
+    for rest in [
+        "target instant card",
+        "another target card",
+        "up to one target card",
+        "up to x target cards",
+        "any number of target cards",
+        "one or more target cards",
+        "any number of spells from your hand",
+    ] {
+        assert!(
+            cast_untyped_rest_names_a_restriction(rest),
+            "{rest:?} names a restriction the bare fallback would drop"
+        );
+    }
+    for rest in [
+        "any number of the copies",
+        "any number of those cards",
+        "any number of cards exiled with ~",
+        "the copies",
+        "this card from exile",
+    ] {
+        assert!(
+            !cast_untyped_rest_names_a_restriction(rest),
+            "{rest:?} restricts nothing beyond cards already fixed"
+        );
+    }
+
+    // Paired positive: a quantifier over an anaphor ("the copies") names no fresh
+    // pool, so it keeps the bare fallback instead of tripping the guard above.
+    let anaphor =
+        parse_effect("you may cast any number of the copies without paying their mana costs");
+    assert!(
+        matches!(&anaphor, Effect::CastFromZone { .. }),
+        "a quantified anaphor must stay a CastFromZone, got {anaphor:?}"
+    );
 
     let typed = parse_effect("you may cast target instant or sorcery card from your graveyard");
     assert!(
@@ -75909,6 +75969,91 @@ fn perpetual_conjunct_after_life_gain_keeps_the_life_gain() {
         panic!("expected an Unimplemented gap after GainLife, got {effects:?}");
     };
     assert_eq!(name, "perpetual_modify_pt");
+}
+
+/// No "perpetually gets" clause may lower to a non-perpetual effect. A sibling
+/// joined by a bare " and it" (Hurkyl's Prodigy, Managorger Phoenix, Benalish
+/// Partisan), an "<A> and <B> each" pair (Darigaaz's Whelp) and an anaphoric
+/// "those <noun>" subject (Gyox, Brutal Carnivora) have no splitter left to
+/// divide them, so the perpetual arm refuses them with its own gap instead of
+/// letting the generic pump drop "perpetually" and turn a permanent edit into an
+/// until-end-of-turn one.
+///
+/// The paired positives keep the negative honest: the bare "it" anaphor and a
+/// comma-joined "and it" sibling still reach a real `ApplyPerpetual`, so the rows
+/// cannot pass by the whole perpetual arm having stopped matching.
+#[test]
+fn a_perpetual_pt_clause_never_lowers_to_a_plain_pump() {
+    for text in [
+        "Hurkyl's Prodigy can't be blocked this turn and it perpetually gets +2/+0",
+        "return ~ to the battlefield tapped and it perpetually gets +1/+0",
+        "~ and that Dragon card each perpetually get +1/+1",
+        "those duplicates perpetually get +X/+X",
+    ] {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        let effects = chain_effects(&def);
+        assert!(
+            effects.iter().any(|e| matches!(
+                e,
+                Effect::Unimplemented { name, .. } if name == "perpetual_modify_pt"
+            )),
+            "{text:?} must fail closed on the perpetual gap, got {effects:?}"
+        );
+        assert!(
+            !effects
+                .iter()
+                .any(|e| matches!(e, Effect::Pump { .. } | Effect::PumpAll { .. })),
+            "{text:?} must not lower to a non-perpetual pump, got {effects:?}"
+        );
+    }
+
+    for text in [
+        "it perpetually gets +1/+1",
+        "return ~ to the battlefield, and it perpetually gets +1/+1",
+    ] {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        let effects = chain_effects(&def);
+        assert!(
+            effects.iter().any(|e| matches!(
+                e,
+                Effect::ApplyPerpetual {
+                    modification: PerpetualModification::ModifyPowerToughness { .. },
+                    ..
+                }
+            )),
+            "{text:?} must keep a real perpetual encoding, got {effects:?}"
+        );
+    }
+}
+
+/// CR 608.2c: a serial zone list in a perpetual subject ("creature cards in your
+/// hand, library, and graveyard", Arming Gala) is one subject. The list element
+/// after ", and" must not open a clause of its own, and the whole clause must
+/// fail closed on the perpetual gap rather than lower to a plain pump. The paired
+/// positive shows the same list without the trailing element still reaches the
+/// gap, so the row does not pass by the arm having stopped matching.
+#[test]
+fn a_perpetual_subject_holding_a_serial_zone_list_is_one_gap() {
+    for text in [
+        "creatures you control and creature cards in your hand, library, and graveyard perpetually get +1/+1",
+        "creatures you control and creature cards in your hand and library perpetually get +1/+1",
+        "Creatures you control and creature cards in your hand, library, and graveyard perpetually get +1/+1.",
+    ] {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        let effects = chain_effects(&def);
+        assert_eq!(
+            effects.len(),
+            1,
+            "{text:?} must stay a single clause, got {effects:?}"
+        );
+        assert!(
+            matches!(
+                &effects[0],
+                Effect::Unimplemented { name, .. } if name == "perpetual_modify_pt"
+            ),
+            "{text:?} must fail closed on the perpetual gap, got {effects:?}"
+        );
+    }
 }
 
 /// CR 701.19c + CR 608.2c: the plural "They can't be regenerated" covers every

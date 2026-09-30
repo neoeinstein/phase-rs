@@ -2239,6 +2239,7 @@ fn starts_perpetual_subject_conjunct(trimmed_lower: &str) -> bool {
         all_consuming(is_not::<_, _, OracleError<'_>>(",."))
             .parse(subject)
             .is_ok()
+            && super::perpetual_conjunct_subject_opens_a_clause(subject)
     })
 }
 
@@ -15790,5 +15791,32 @@ mod leading_duration_guard_tests_7923 {
         assert!(!starts_perpetual_subject_conjunct(
             "and draw a card, then target creature perpetually gets +1/+1"
         ));
+    }
+
+    /// CR 608.2c: the last element of a serial list ("…in your hand, library,
+    /// and graveyard perpetually get +1/+1", Arming Gala) is not a subject, so
+    /// its ", and" is no clause boundary. The paired positive rows show the
+    /// same rule still opens a clause at a real noun-phrase subject, so the
+    /// negative cannot pass by the splitter having stopped firing.
+    #[test]
+    fn perpetual_conjunct_boundary_ignores_a_list_element() {
+        assert!(starts_perpetual_subject_conjunct(
+            "and the topmost creature card in your library perpetually gets +X/+X"
+        ));
+        assert!(starts_perpetual_subject_conjunct(
+            "and creature cards in your hand perpetually get +1/+1"
+        ));
+        assert!(!starts_perpetual_subject_conjunct(
+            "and graveyard perpetually get +1/+1"
+        ));
+        assert_eq!(
+            split_clause_sequence(
+                "Creatures you control and creature cards in your hand, library, and graveyard \
+                 perpetually get +1/+1"
+            )
+            .len(),
+            1,
+            "a serial-list subject is one clause"
+        );
     }
 }

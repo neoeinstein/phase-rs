@@ -11534,13 +11534,18 @@ pub(super) fn split_perpetual_get_clause(lower: &str) -> Option<(&str, &str)> {
 
 /// True when `subject` belongs to the chain splitter / subject binder rather
 /// than to this clause: a bare "it" anaphor (the binder fails it closed when
-/// unbound), or anything that is not ONE complete noun phrase. A lead-in that
-/// `parse_target` cannot consume whole — a sibling clause joined by ", and" /
-/// " and it", or a leading guard ("if it's a creature, it") — is left for the
-/// chain splitter and guard peel to break apart before this arm sees the
-/// residual clause. The splitter opens a clause at ", and <subject> perpetually
-/// get(s)" (`starts_perpetual_subject_conjunct`), so a sibling instruction never
-/// reaches this arm fused to the perpetual edit.
+/// unbound), or a lead-in that is not ONE complete noun phrase AND carries a
+/// clause boundary the splitter or guard peel will break apart — a sibling
+/// clause joined by ", and" or a leading guard ("if it's a creature, it"). The
+/// splitter opens a clause at ", and <subject> perpetually get(s)"
+/// (`starts_perpetual_subject_conjunct`), so a sibling instruction never reaches
+/// this arm fused to the perpetual edit.
+///
+/// A lead-in with NO boundary of that kind has nothing left to split it, so it is
+/// this arm's to own or to refuse: a sibling joined by a bare " and it" ("~ can't
+/// be blocked this turn and it"), a "<A> and <B> each" pair, or an anaphoric
+/// "those <noun>" subject. Declining them would let the generic pump lower the
+/// clause and drop "perpetually", turning a permanent edit into a temporary one.
 fn perpetual_subject_is_chain_led(subject: &str) -> bool {
     if all_consuming(tag::<_, _, OracleError<'_>>("it"))
         .parse(subject)
@@ -11548,7 +11553,46 @@ fn perpetual_subject_is_chain_led(subject: &str) -> bool {
     {
         return true;
     }
-    !(subject_is_complete_noun_phrase_list(subject) || subject_is_unmodelled_noun_phrase(subject))
+    !(subject_is_complete_noun_phrase_list(subject)
+        || subject_is_unmodelled_noun_phrase(subject)
+        || subject_is_zone_list_fragment(subject)
+        || subject_has_no_clause_boundary(subject))
+}
+
+/// A serial zone list left over when an earlier splitter cut a subject inside its
+/// list ("library, and graveyard" of "…in your hand, library, and graveyard").
+/// It is no clause of its own and no splitter will rejoin it, so the arm records
+/// it as a gap instead of letting the generic pump lower the fragment.
+fn subject_is_zone_list_fragment(subject: &str) -> bool {
+    all_consuming(pair(
+        super::oracle_target::parse_zone_word,
+        parse_zone_list_tail,
+    ))
+    .parse(subject)
+    .is_ok()
+}
+
+/// True when `subject` holds no clause-boundary comma and opens with no guard
+/// ("if …"), so no splitter downstream can divide it.
+fn subject_has_no_clause_boundary(subject: &str) -> bool {
+    tag::<_, _, OracleError<'_>>("if ").parse(subject).is_err()
+        && take_until::<_, _, OracleError<'_>>(", ")
+            .parse(subject)
+            .is_err()
+}
+
+/// True when a ", and <subject> perpetually get(s)" conjunct opens with a real
+/// subject the perpetual arm can own (the same noun-phrase test the arm applies),
+/// rather than the last element of a serial list ("…in your hand, library, and
+/// graveyard perpetually get +1/+1"). `parse_target` reads a bare zone noun as
+/// "cards in that zone", so a lone zone name is rejected here explicitly: it is a
+/// list element, never a subject.
+pub(super) fn perpetual_conjunct_subject_opens_a_clause(subject: &str) -> bool {
+    all_consuming(super::oracle_target::parse_zone_word)
+        .parse(subject)
+        .is_err()
+        && (subject_is_complete_noun_phrase_list(subject)
+            || subject_is_unmodelled_noun_phrase(subject))
 }
 
 /// A determiner-led subject with no clause-boundary comma whose noun phrase
@@ -11583,9 +11627,29 @@ fn subject_is_complete_noun_phrase_list(subject: &str) -> bool {
         return false;
     }
     after_subject.is_empty()
+        || all_consuming(parse_zone_list_tail)
+            .parse(after_subject)
+            .is_ok()
         || tag::<_, _, OracleError<'_>>(" and ")
             .parse(after_subject)
             .is_ok_and(|(next, _)| subject_is_complete_noun_phrase_list(next))
+}
+
+/// The rest of a serial zone list after its first zone was consumed by the noun
+/// phrase ("creature cards in your hand" + ", library, and graveyard").
+fn parse_zone_list_tail(input: &str) -> OracleResult<'_, ()> {
+    value(
+        (),
+        many1(preceded(
+            alt((
+                tag::<_, _, OracleError<'_>>(", and "),
+                tag(", "),
+                tag(" and "),
+            )),
+            super::oracle_target::parse_zone_word,
+        )),
+    )
+    .parse(input)
 }
 
 /// A "perpetually get(s) ±" clause no arm above can model faithfully (a dynamic
@@ -27332,6 +27396,54 @@ fn parse_cast_quantifier_prefix(input: &str) -> OracleResult<'_, ()> {
     .parse(input)
 }
 
+/// CR 601.2c: the object of a cast clause that refers back to cards an earlier
+/// clause already fixed ("the copies", "those cards", "them", "cards exiled with
+/// ~", "one of them"), so its untyped `TargetFilter::Any` names no fresh pool.
+fn parse_cast_anaphoric_object(input: &str) -> OracleResult<'_, ()> {
+    value(
+        (),
+        alt((
+            tag::<_, _, OracleError<'_>>("the "),
+            tag("those "),
+            tag("that "),
+            tag("them"),
+            tag("cards exiled"),
+            tag("one of "),
+        )),
+    )
+    .parse(input)
+}
+
+/// CR 115.1 + CR 601.2c: does a cast remainder that Branch 2 could not type
+/// still name a restriction the bare `Any` fallback would drop? Two shapes do:
+/// a declared target with its optional cardinality ("target …", "up to one
+/// target …", "any number of target …", "another target …"), and a quantified
+/// pool whose noun is not an anaphor ("any number of spells from your hand",
+/// "any number of red instant and/or sorcery cards from your graveyard"). A
+/// quantifier over an anaphor ("any number of the copies") restricts nothing
+/// beyond the referenced cards, so those keep the fallback.
+fn cast_untyped_rest_names_a_restriction(rest: &str) -> bool {
+    alt((
+        value(
+            (),
+            (
+                opt(parse_cast_quantifier_prefix),
+                opt(tag::<_, _, OracleError<'_>>("another ")),
+                tag("target "),
+            ),
+        ),
+        value(
+            (),
+            (
+                parse_cast_quantifier_prefix,
+                not(parse_cast_anaphoric_object),
+            ),
+        ),
+    ))
+    .parse(rest)
+    .is_ok()
+}
+
 /// CR 601.3 + CR 205.2b + CR 109.2b: the card-type list carried by a cast
 /// clause subject — "an instant or sorcery spell", "instant and sorcery
 /// spells", "any number of instant and/or sorcery spells", "up to two sorcery
@@ -29468,15 +29580,11 @@ fn try_parse_cast_effect(lower: &str, ctx: &ParseContext) -> Option<Effect> {
     }
 
     // CR 115.1 + CR 601.2c: a cast clause that names declared targets ("up to one
-    // target instant card ...") but reached this untyped fallback has lost its
-    // per-slot type filters; fail closed rather than grant a cast of any card.
-    if preceded(
-        opt(tag::<_, _, OracleError<'_>>("up to one ")),
-        tag("target "),
-    )
-    .parse(rest)
-    .is_ok()
-    {
+    // target instant card ...") or a quantified pool of cards ("any number of
+    // red instant and/or sorcery cards from your graveyard") but reached this
+    // untyped fallback has lost its type/zone filter; fail closed rather than
+    // grant a cast of any card.
+    if cast_untyped_rest_names_a_restriction(rest) {
         return Some(Effect::unimplemented(CAST_TARGET_UNTYPED_GAP, rest));
     }
 
@@ -32878,6 +32986,19 @@ fn starts_with_plural_subject_anaphor(lower: &str) -> bool {
     alt((tag::<_, _, OracleError<'_>>("they "), tag("those ")))
         .parse(lower.trim_start())
         .is_ok()
+}
+
+/// CR 608.2c: a clause led by a singular subject anaphor ("It gains …", "Its
+/// controller gains …", "That creature …") names one object of the earlier
+/// instructions.
+fn starts_with_singular_subject_anaphor(lower: &str) -> bool {
+    alt((
+        tag::<_, _, OracleError<'_>>("it "),
+        tag("its "),
+        tag("that "),
+    ))
+    .parse(lower.trim_start())
+    .is_ok()
 }
 
 /// CR 603.7: Detect implicit anaphora when preceded by an exile effect.

@@ -9880,6 +9880,16 @@ fn lower_change_zone_all_to_library(origins: Vec<Zone>) -> ParsedEffectClause {
     clause
 }
 
+/// CR 301.5 + CR 303.4: an unconsumed " attached to <object>" qualifier after a
+/// target phrase ("all Equipment attached to that creature"). The target filter
+/// cannot express the relation, so dropping it would widen the population to
+/// every such permanent; the caller fails closed instead.
+fn opens_attachment_qualifier(remainder: &str) -> bool {
+    tag::<_, _, OracleError<'_>>(" attached to ")
+        .parse(remainder)
+        .is_ok()
+}
+
 pub(super) fn parse_destroy_ast(
     text: &str,
     lower: &str,
@@ -9893,18 +9903,24 @@ pub(super) fn parse_destroy_ast(
         let (_, rest) = nom_on_lower(text, lower, |input| value((), tag("destroy ")).parse(input))?;
         // CR 608.2k: thread `ctx` so bare "it"/"them" anaphors bind to the
         // triggering subject ("Whenever a creature dies, destroy it" class).
-        let (target, _rem) = parse_target_with_ctx(rest, ctx);
+        let (target, rem) = parse_target_with_ctx(rest, ctx);
+        if opens_attachment_qualifier(rem) {
+            return None;
+        }
         #[cfg(debug_assertions)]
-        assert_no_compound_remainder(_rem, text);
+        assert_no_compound_remainder(rem, text);
         return Some(ZoneCounterImperativeAst::Destroy { target, all: true });
     }
     if let Some((_, rest)) =
         nom_on_lower(text, lower, |input| value((), tag("destroy ")).parse(input))
     {
         // CR 608.2k: see comment above — anaphor binding via parse_target_with_ctx.
-        let (target, _rem) = parse_target_with_ctx(rest, ctx);
+        let (target, rem) = parse_target_with_ctx(rest, ctx);
+        if opens_attachment_qualifier(rem) {
+            return None;
+        }
         #[cfg(debug_assertions)]
-        assert_no_compound_remainder(_rem, text);
+        assert_no_compound_remainder(rem, text);
         return Some(ZoneCounterImperativeAst::Destroy { target, all: false });
     }
     None

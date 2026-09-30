@@ -25139,10 +25139,13 @@ fn senu_keen_eyed_protector_exile_attack_trigger_lowers_correctly() {
     }
 }
 
-/// CR 608.2c: Managorger Phoenix — off-battlefield return + perpetual pump both
-/// bind bare "it" anaphors to the source, not the cast spell event object.
+/// CR 608.2c: Managorger Phoenix — "return it to the battlefield and it
+/// perpetually gets +1/+1" joins a return and a perpetual edit whose bare "it"
+/// no binder here resolves to the returned source. The clause fails closed on the
+/// perpetual gap rather than lowering the edit to a plain, until-end-of-turn
+/// `Pump` that drops "perpetually" (and binds to the wrong object).
 #[test]
-fn managorger_phoenix_graveyard_return_rewrites_self_anaphors() {
+fn managorger_phoenix_perpetual_clause_fails_closed_instead_of_pumping() {
     let def = parse_trigger_line(
         "Whenever you cast a spell, if Managorger Phoenix is in your graveyard, put a flame counter on Managorger Phoenix for each {R} in that spell's mana cost. If Managorger Phoenix has five or more flame counters on it, return it to the battlefield and it perpetually gets +1/+1.",
         "Managorger Phoenix",
@@ -25158,40 +25161,25 @@ fn managorger_phoenix_graveyard_return_rewrites_self_anaphors() {
     );
 
     let execute = def.execute.as_ref().expect("trigger must execute");
-    // Root: flame counter clause. Conditional sibling: return + perpetual pump.
-    let return_branch = execute
+    // Reach guard: the counter clause still parses, so the gap below is the
+    // conditional sibling and not a wholesale parse failure.
+    assert!(
+        matches!(&*execute.effect, Effect::PutCounter { .. }),
+        "the flame-counter clause must still lower, got {:?}",
+        execute.effect
+    );
+    let perpetual_branch = execute
         .sub_ability
         .as_ref()
-        .expect("counter clause must chain to return branch");
-    match &*return_branch.effect {
-        Effect::ChangeZone {
-            destination,
-            target,
-            ..
-        } => {
-            assert_eq!(*destination, Zone::Battlefield);
-            assert_eq!(
-                *target,
-                TargetFilter::SelfRef,
-                "return it must target the Phoenix in graveyard"
-            );
-        }
-        other => panic!("expected ChangeZone return, got {other:?}"),
-    }
-    let pump = return_branch
-        .sub_ability
-        .as_ref()
-        .expect("return must chain to perpetual pump");
-    match &*pump.effect {
-        Effect::Pump { target, .. } | Effect::ApplyPerpetual { target, .. } => {
-            assert_eq!(
-                *target,
-                TargetFilter::SelfRef,
-                "it perpetually gets +1/+1 must target the Phoenix, not the cast spell"
-            );
-        }
-        other => panic!("expected Pump/ApplyPerpetual perpetual clause, got {other:?}"),
-    }
+        .expect("counter clause must chain to the perpetual branch");
+    assert!(
+        matches!(
+            &*perpetual_branch.effect,
+            Effect::Unimplemented { name, .. } if name == "perpetual_modify_pt"
+        ),
+        "the perpetual edit must fail closed, got {:?}",
+        perpetual_branch.effect
+    );
 }
 
 #[test]
@@ -35021,4 +35009,40 @@ fn later_sentence_unless_pay_is_not_hoisted_onto_the_trigger() {
     );
     let exec = later.execute.as_deref().expect("trigger execute body");
     assert!(matches!(&*exec.effect, Effect::Draw { .. }));
+    let lose_life = std::iter::successors(exec.sub_ability.as_deref(), |node| {
+        node.sub_ability.as_deref()
+    })
+    .find(|node| matches!(&*node.effect, Effect::LoseLife { .. }))
+    .expect("the later sentence's life loss stays in the chain");
+    assert!(
+        lose_life.unless_pay.is_some(),
+        "the unless cost lands on its own clause"
+    );
+}
+
+/// CR 608.2c: Arming Gala's perpetual subject is a serial zone list ("…in your
+/// hand, library, and graveyard"). However the trigger splitter cuts it, the
+/// perpetual edit must not lower to a plain until-end-of-turn `Pump` that drops
+/// "perpetually"; it fails closed on the perpetual gap. The paired positive is the
+/// two-zone list of the same shape, which reaches the same gap intact.
+#[test]
+fn a_perpetual_zone_list_subject_in_a_trigger_never_lowers_to_a_pump() {
+    for zones in ["hand, library, and graveyard", "hand and library"] {
+        let def = parse_trigger_line(
+            &format!(
+                "At the beginning of your end step, creatures you control and creature cards in your {zones} perpetually get +1/+1."
+            ),
+            "Arming Gala",
+        );
+        assert_eq!(def.mode, TriggerMode::Phase, "{zones}");
+        let execute = def.execute.as_ref().expect("trigger must execute");
+        assert!(
+            matches!(
+                &*execute.effect,
+                Effect::Unimplemented { name, .. } if name == "perpetual_modify_pt"
+            ),
+            "{zones}: the perpetual edit must fail closed, got {:?}",
+            execute.effect
+        );
+    }
 }

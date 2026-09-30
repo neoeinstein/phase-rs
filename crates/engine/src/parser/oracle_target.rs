@@ -7704,14 +7704,21 @@ fn parse_counters_put_this_turn_clause(input: &str) -> Option<(FilterProp, usize
 
 /// A keyword-list separator followed by something other than a keyword, where
 /// that something opens another leg of the enclosing list — a type word ("creature
-/// with disturb, or enchantment") or an "each" leg ("each creature without flying
-/// and each planeswalker") — belongs to the enclosing list and stays unconsumed.
+/// with disturb, or enchantment") or a determiner-led leg ("each creature without
+/// flying and each planeswalker", "target creature with flying and all Equipment
+/// attached to that creature") — belongs to the enclosing list and stays
+/// unconsumed.
 fn separator_continues_enclosing_list(after_separator: &str) -> bool {
     parse_leading_keyword_match(after_separator).is_none()
         && (starts_with_type_word(after_separator)
-            || tag::<_, _, OracleError<'_>>("each ")
-                .parse(after_separator)
-                .is_ok())
+            || alt((
+                tag::<_, _, OracleError<'_>>("each "),
+                tag("all "),
+                tag("target "),
+                tag("up to "),
+            ))
+            .parse(after_separator)
+            .is_ok())
 }
 
 struct KeywordSuffix {
@@ -21924,6 +21931,37 @@ mod tests {
             matches!(&filters[0], TargetFilter::Typed(t) if !t.type_filters.contains(&TypeFilter::Creature)),
             "independent Spirit leg must stay creature-free: {:?}",
             filters[0]
+        );
+    }
+
+    /// CR 608.2c: a keyword suffix stops before a separator that opens another
+    /// determiner-led leg of the enclosing phrase ("target creature with flying
+    /// and all Equipment attached to that creature"), so the leg is not swallowed.
+    /// The paired positive: a separator followed by another keyword still joins
+    /// the keyword list.
+    #[test]
+    fn keyword_suffix_leaves_determiner_led_leg_unconsumed() {
+        for leg in [
+            " and all Equipment attached to that creature",
+            " and each planeswalker",
+            " and target artifact",
+            " and up to one target land",
+        ] {
+            let text = format!("target creature with flying{leg}");
+            let (filter, rest) = parse_target(&text);
+            assert!(
+                matches!(&filter, TargetFilter::Typed(t)
+                    if t.properties.iter().any(|p| matches!(p, FilterProp::WithKeyword { .. }))),
+                "{text}: flying suffix kept: {filter:?}"
+            );
+            assert_eq!(rest, leg, "{text}: the determiner-led leg stays unconsumed");
+        }
+        let (filter, rest) = parse_target("target creature with flying and vigilance");
+        assert_eq!(rest, "", "a second keyword still joins the list");
+        assert!(
+            matches!(&filter, TargetFilter::Typed(t)
+                if t.properties.iter().filter(|p| matches!(p, FilterProp::WithKeyword { .. })).count() == 2),
+            "{filter:?}"
         );
     }
 
