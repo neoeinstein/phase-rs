@@ -7871,8 +7871,7 @@ pub(crate) const PREVENT_DEALT_BY_TARGET_GAP: &str = "prevent_damage_dealt_by_ta
 
 /// Gap for a bidirectional prevent whose "to" half names a declared "target
 /// <X>" recipient; no representation scopes both halves to the one chosen
-/// object yet. Like `PREVENT_DEALT_BY_TARGET_GAP`, the spell prevent route
-/// keeps it as-is.
+/// object yet.
 pub(crate) const BIDIRECTIONAL_PREVENT_DECLARED_TARGET_GAP: &str =
     "bidirectional_prevent_declared_target";
 
@@ -8371,7 +8370,12 @@ pub(super) fn parse_put_ast(
                 // player.
                 // `Opponent` is the per-opponent sentinel of "each opponent's
                 // library"; Mill does not run `lift_distributive_exile_top_scope`.
-                if matches!(owner, TargetFilter::ScopedPlayer | TargetFilter::Opponent) {
+                // `ScopedPlayer` from an anaphoric "their library" bound by an enclosing
+                // "Each player ..." scope (Largepox) is already iterated by that scope,
+                // so a single Mill is correct; only the literal row is a fan-out.
+                let literal_per_player = matches!(owner, TargetFilter::ScopedPlayer)
+                    && ctx.relative_player_scope.is_none();
+                if literal_per_player || matches!(owner, TargetFilter::Opponent) {
                     return Some(PutImperativeAst::Unimplemented {
                         gap: "put_top_of_library_per_player",
                         fragment: text.to_string(),
@@ -11381,7 +11385,6 @@ pub(super) fn parse_counter_ast(text: &str, lower: &str) -> Option<ZoneCounterIm
 /// accidental alpha-suffix matches (e.g., `"x lifelink"`).
 fn parse_pay_life_amount(rest: &str) -> Option<QuantityExpr> {
     use crate::parser::oracle_nom::error::OracleResult;
-    use nom::combinator::recognize;
     use nom::sequence::terminated;
 
     // Shared word-boundary guard: the token just consumed must be followed by

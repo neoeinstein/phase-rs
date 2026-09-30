@@ -76590,6 +76590,24 @@ fn put_top_of_library_into_graveyard_carries_owner_and_count() {
         );
     }
 
+    // An anaphoric "their library" bound by an enclosing "Each player ..." scope
+    // (Largepox) is iterated by that scope: one Mill, no gap.
+    let chain = parse_effect_chain(
+        "Each player discards a card, then puts the top card of their library into their graveyard.",
+        AbilityKind::Spell,
+    );
+    assert!(
+        chain_any(&chain, &|d| matches!(&*d.effect, Effect::Mill { .. })),
+        "{chain:#?}"
+    );
+    assert!(
+        !chain_any(&chain, &|d| matches!(
+            &*d.effect,
+            Effect::Unimplemented { .. }
+        )),
+        "{chain:#?}"
+    );
+
     for text in [
         "Put the top two cards of each player's library into their graveyard.",
         "Put the top two cards of each opponent's library into their graveyard.",
@@ -77463,6 +77481,44 @@ fn prevent_dealt_by_target_spell_line_never_becomes_a_blanket_replacement() {
         "{:#?}",
         lowered.abilities[0].effect
     );
+}
+
+/// CR 615 + CR 609.7: a bidirectional prevent with a declared "target <X>"
+/// recipient stays a spell gap through the full spell-line router; it must not
+/// fall through to the replacement priority as a blanket prevention.
+#[test]
+fn bidirectional_prevent_declared_target_spell_line_never_becomes_a_blanket_replacement() {
+    for text in [
+        "Prevent all damage that would be dealt to and dealt by target creature this turn.",
+        "Prevent all combat damage that would be dealt to and dealt by target creature this turn.",
+        "Target creature gets +1/+1 until end of turn. Prevent all damage that would be dealt to and dealt by target creature this turn.",
+    ] {
+        let parsed = parse_oracle_text(
+            text,
+            "Prevention Probe",
+            &[],
+            &["Instant".to_string()],
+            &[],
+        );
+        assert!(
+            parsed.replacements.is_empty(),
+            "{text}: no blanket replacement: {:#?}",
+            parsed.replacements
+        );
+        assert_eq!(
+            parsed.abilities.len(),
+            1,
+            "{text}: the line stays one spell ability"
+        );
+        assert!(
+            chain_any(&parsed.abilities[0], &|d| matches!(
+                &*d.effect,
+                Effect::Unimplemented { name, .. } if name == "bidirectional_prevent_declared_target"
+            )),
+            "{text}: {:#?}",
+            parsed.abilities[0]
+        );
+    }
 }
 
 /// CR 615 + CR 609.7: the fail-closed "dealt by target creature" gap is found
